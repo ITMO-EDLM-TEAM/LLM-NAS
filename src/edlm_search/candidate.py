@@ -1,5 +1,5 @@
-from edlm_search.llm_pipeline import LLMPipeline
-from edlm_search.problem import Problem
+from .llm_pipeline import LLMPipeline
+from .problem import Problem
 
 
 class Candidate:
@@ -13,6 +13,6 @@ class Candidate:
     async def new_from_problem(cls, problem: Problem, llm_pipeline: LLMPipeline):
         """Create a new candidate by generating a solution for a given problem using an LLM."""
         idea, files = await llm_pipeline.generate_files_from_template(
-            'new_candidate', problem=problem
+                'new_candidate', problem=problem
         )
         return Candidate(files, idea)
