@@ -1,154 +1,104 @@
+# edlm_search/candidates_database.py
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Final
+from dataclasses import field
 from typing import Iterable
+from typing import Mapping
 
 import pandas as pd
 
-from .candidate import Candidate
 
-
-@dataclass
+@dataclass(frozen=True)
 class CandidateRecord:
-    """Структура для хранения результата оценки одного кандидата."""
-
-    candidate_id: str
-    candidate: Candidate
+    """Result of a single candidate evaluation."""
+    candidate_id: int
     idea: str
     metrics: dict[str, float]
-    backend_name: str
-    created_at: datetime
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class CandidateDatabase:
-    """Простая in-memory база данных для хранения и выборки кандидатов."""
+    """In-memory store of all evaluated candidates.
 
-    def __init__(self):
-        """Инициализирует пустую базу кандидатов."""
+    This class is intentionally lightweight and keeps data both in
+    a list of records and in a pandas.DataFrame for convenient
+    downstream analysis.
+    """
+
+    def __init__(self) -> None:
         self._records: list[CandidateRecord] = []
+        self._df = pd.DataFrame(
+                columns=['candidate_id', 'idea', 'metrics', 'metadata'],
+        )
+
+    @property
+    def dataframe(self) -> pd.DataFrame:
+        """Return a copy of the internal dataframe with all results."""
+        return self._df.copy()
 
     def add_result(
             self,
-            candidate: Candidate,
-            metrics: dict[str, float],
-            backend_name: str,
-    ) -> CandidateRecord:
-        """
-        Добавляет результат оценки кандидата в базу.
+            candidate_id: int,
+            idea: str,
+            metrics: Mapping[str, float],
+            metadata: dict[str, object] | None = None,
+    ) -> None:
+        """Add a new evaluation result to the store.
 
-        Параметры
-        ----------
-        candidate : Candidate
-            Экземпляр кандидата, сгенерированный LLM.
-        metrics : dict[str, float]
-            Словарь метрик качества модели.
-        backend_name : str
-            Имя используемого LLM-бэкенда (например, 'deepseek' или 'lmstudio').
-
-        Возвращает
-        ----------
-        CandidateRecord
-            Созданная запись о кандидате.
+        The method validates that at least one metric is provided and that
+        all metric values are finite numeric scalars.
         """
         if not metrics:
-            raise ValueError("Словарь метрик не может быть пустым.")
+            raise ValueError('Набор метрик пуст — результат оценки кандидата не может быть сохранён.')
 
-        candidate_id: Final[str] = f"cand-{len(self._records) + 1}"
+        validated_metrics: dict[str, float] = {}
+        for name, value in metrics.items():
+            try:
+                numeric_value = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(
+                        f'Значение метрики {name!r} не может быть приведено к числу.'
+                ) from exc
+            if not math.isfinite(numeric_value):
+                raise ValueError(
+                        f'Значение метрики {name!r} должно быть конечным числом.'
+                )
+            validated_metrics[name] = numeric_value
+
+        if metadata is None:
+            metadata = {}
+
         record = CandidateRecord(
                 candidate_id=candidate_id,
-                candidate=candidate,
-                idea=candidate.idea,
-                metrics=dict(metrics),
-                backend_name=backend_name,
-                created_at=datetime.utcnow(),
+                idea=idea,
+                metrics=validated_metrics,
+                metadata=dict(metadata),
         )
         self._records.append(record)
-        return record
 
-    def list_records(self) -> list[CandidateRecord]:
-        """
-        Возвращает все записи о кандидатах.
+        new_row = {
+            'candidate_id': candidate_id,
+            'idea': idea,
+            'metrics': validated_metrics,
+            'metadata': dict(metadata),
+        }
+        self._df = pd.concat([self._df, pd.DataFrame([new_row])], ignore_index=True)
 
-        Возвращает
-        ----------
-        list[CandidateRecord]
-            Список всех сохранённых записей.
-        """
-        return list(self._records)
+    def top_k_by_metric(self, metric_name: str, k: int) -> Iterable[CandidateRecord]:
+        """Return top-k candidates sorted by the specified metric (ascending)."""
+        if k <= 0:
+            raise ValueError('Число кандидатов k должно быть положительным.')
+        if not self._records:
+            return []
 
-    def top_k_by_metric(self, metric_name: str, k: int) -> list[CandidateRecord]:
-        """
-        Возвращает top-k кандидатов по указанной метрике (меньше — лучше).
-
-        Параметры
-        ----------
-        metric_name : str
-            Имя метрики, по которой будет происходить сортировка.
-        k : int
-            Количество лучших кандидатов для возврата.
-
-        Возвращает
-        ----------
-        list[CandidateRecord]
-            Отсортированный список из не более чем k кандидатов.
-
-        Исключения
-        ----------
-        ValueError
-            Если k меньше единицы или если нет ни одной записи с указанной метрикой.
-        """
-        if k < 1:
-            raise ValueError("Параметр k должен быть не меньше 1.")
-
-        filtered = [r for r in self._records if metric_name in r.metrics]
+        filtered = [
+            record for record in self._records
+            if metric_name in record.metrics
+        ]
         if not filtered:
-            raise ValueError(f"В базе нет кандидатов с метрикой '{metric_name}'.")
+            return []
 
         sorted_records = sorted(filtered, key=lambda r: r.metrics[metric_name])
         return sorted_records[:k]
-
-    def to_dataframe(self) -> pd.DataFrame:
-        """
-        Возвращает содержимое базы кандидатов в виде DataFrame.
-
-        Возвращает
-        ----------
-        pandas.DataFrame
-            Таблица с основными полями кандидатов и метрик.
-        """
-        rows: list[dict] = []
-        for record in self._records:
-            row: dict[str, object] = {
-                "candidate_id": record.candidate_id,
-                "idea": record.idea,
-                "backend_name": record.backend_name,
-                "created_at": record.created_at,
-            }
-            for metric_name, metric_value in record.metrics.items():
-                row[metric_name] = metric_value
-            rows.append(row)
-        return pd.DataFrame(rows)
-
-    def __len__(self) -> int:
-        """
-        Возвращает количество кандидатов в базе.
-
-        Возвращает
-        ----------
-        int
-            Число записей.
-        """
-        return len(self._records)
-
-    def iter_records(self) -> Iterable[CandidateRecord]:
-        """
-        Возвращает итератор по всем записям в базе.
-
-        Возвращает
-        ----------
-        Iterable[CandidateRecord]
-            Итератор по записям.
-        """
-        return iter(self._records)

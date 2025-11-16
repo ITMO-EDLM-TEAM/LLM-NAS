@@ -44,12 +44,12 @@ class ETTM1Evaluator:
         if num_epochs < 1:
             raise ValueError('Число эпох должно быть положительным.')
 
-        self._train_df = train_df.reset_index(drop=True).copy()
-        self._valid_df = valid_df.reset_index(drop=True).copy()
-        self._target_column = target_column
-        self._metric_name = metric_name
-        self._num_epochs = num_epochs
-        self._validation_targets = np.asarray(
+        self._train_df: pd.DataFrame = train_df.reset_index(drop=True).copy()
+        self._valid_df: pd.DataFrame = valid_df.reset_index(drop=True).copy()
+        self._target_column: str = target_column
+        self._metric_name: str = metric_name
+        self._num_epochs: int = num_epochs
+        self._validation_targets: np.ndarray = np.asarray(
                 self._valid_df[self._target_column].to_numpy(),
                 dtype=np.float64,
         )
@@ -87,23 +87,43 @@ class ETTM1Evaluator:
                     'Кандидат завершил работу, не выдав предсказаний на валидации.'
             )
 
-        evaluation_count = min(latest_predictions.size, self._validation_targets.size)
-        if evaluation_count == 0:
-            raise RuntimeError('Невозможно вычислить метрику: нет доступных значений целевой переменной.')
-        if latest_predictions.size != self._validation_targets.size:
-            _LOGGER.warning(
-                    f'Несовпадение длины предсказаний ({latest_predictions.size}) и цели '
-                    f'({self._validation_targets.size}); используются первые {evaluation_count} значений.'
-            )
-
-        errors = latest_predictions[:evaluation_count] - self._validation_targets[:evaluation_count]
-        mse_value = float(np.mean(errors * errors))
-        metrics = {self._metric_name: mse_value}
+        mse_value = self._compute_mse(latest_predictions)
+        metrics: dict[str, float] = {self._metric_name: mse_value}
 
         if energy_joules is not None:
             metrics['total_energy_joules'] = energy_joules
 
         _LOGGER.info(
-                f'Оценка кандидата "{candidate.idea}" завершена: {self._metric_name}={mse_value:.6f}.'
+                f'Оценка кандидата "{candidate.idea}" завершена: '
+                f'{self._metric_name}={mse_value:.6f}.'
         )
         return metrics
+
+    def _compute_mse(self, predictions: np.ndarray) -> float:
+        """
+        Compute mean squared error between candidate predictions and validation targets.
+
+        The method validates input length and checks that both predictions and targets
+        contain only finite numeric values.
+        """
+        evaluation_count = min(predictions.size, self._validation_targets.size)
+        if evaluation_count == 0:
+            raise RuntimeError(
+                    'Невозможно вычислить метрику: нет доступных значений целевой переменной.'
+            )
+
+        truncated_predictions = predictions[:evaluation_count]
+        truncated_targets = self._validation_targets[:evaluation_count]
+
+        if not np.isfinite(truncated_predictions).all():
+            raise ValueError(
+                    'Предсказания содержат некорректные значения (NaN или бесконечность).'
+            )
+        if not np.isfinite(truncated_targets).all():
+            raise ValueError(
+                    'Целевая переменная в валидационной выборке содержит некорректные значения.'
+            )
+
+        errors = truncated_predictions - truncated_targets
+        mse_value = float(np.mean(errors * errors))
+        return mse_value
