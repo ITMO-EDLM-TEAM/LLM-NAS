@@ -1,8 +1,10 @@
+# edlm_search/src/Informer2020/informer_experiment_wrapper.py
 # edlm_search/Informer2020/informer_experiment_wrapper.py
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -16,6 +18,8 @@ try:
     from zeus.monitor import ZeusMonitor
 except ImportError:  # pragma: no cover
     ZeusMonitor = None  # type: ignore[assignment]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -243,8 +247,14 @@ def _run_informer_and_get_metrics(
 
     gpu_monitor = None
     if ZeusMonitor is not None:
-        gpu_monitor = ZeusMonitor(gpu_indices=[0])
-        gpu_monitor.begin_window('informer_external_run')
+        try:
+            gpu_monitor = ZeusMonitor(gpu_indices=[0])
+            gpu_monitor.begin_window('informer_external_run')
+        except Exception as exc:
+            _LOGGER.warning(
+                    f'ZeusMonitor could not be initialized for Informer external run, GPU metrics will be skipped: {exc}'
+            )
+            gpu_monitor = None
 
     start_time = time.perf_counter()
     completed = subprocess.run(
@@ -259,8 +269,14 @@ def _run_informer_and_get_metrics(
     total_runtime_seconds = float(end_time - start_time)
     total_energy_joules = 0.0
     if gpu_monitor is not None:
-        measurement = gpu_monitor.end_window('informer_external_run')
-        total_energy_joules = float(measurement.total_energy)
+        try:
+            measurement = gpu_monitor.end_window('informer_external_run')
+            total_energy_joules = float(measurement.total_energy)
+        except Exception as exc:
+            _LOGGER.warning(
+                    f'ZeusMonitor failed during Informer external run measurement, GPU metrics will be skipped: {exc}'
+            )
+            total_energy_joules = 0.0
 
     if completed.returncode != 0:
         stdout_text = completed.stdout.strip()

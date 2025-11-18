@@ -1,3 +1,4 @@
+# edlm_search/src/experiments/experiment_api.py
 from __future__ import annotations
 
 import logging
@@ -22,16 +23,16 @@ _logger = logging.getLogger(__name__)
 def run_lstm_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int = 10000,
-        train_ratio: float = 0.8,
-        seq_len: int = 96,
-        pred_len: int = 24,
-        hidden_size: int = 128,
-        num_layers: int = 2,
-        learning_rate: float = 1e-3,
-        batch_size: int = 64,
-        num_epochs: int = 10,
-        model_name: str = 'lstm-baseline',
+        max_rows: int,
+        train_ratio: float,
+        seq_len: int,
+        pred_len: int,
+        hidden_size: int,
+        num_layers: int,
+        learning_rate: float,
+        batch_size: int,
+        num_epochs: int,
+        model_name: str,
 ) -> ExperimentResult:
     """
     Высокоуровневая функция запуска эксперимента с LSTM на ETTh-датасетах (ETTh1, ETTh2).
@@ -108,9 +109,15 @@ def run_lstm_etth_experiment(
     monitor = None
     gpu_total_energy_joules = 0.0
     if torch.cuda.is_available():
-        current_device = torch.cuda.current_device()
-        monitor = ZeusMonitor(gpu_indices=[current_device])
-        monitor.begin_window('lstm_etth_experiment')
+        try:
+            current_device = torch.cuda.current_device()
+            monitor = ZeusMonitor(gpu_indices=[current_device])
+            monitor.begin_window('lstm_etth_experiment')
+        except Exception as exc:
+            _logger.warning(
+                    f'ZeusMonitor could not be initialized for LSTM experiment, GPU metrics will be skipped: {exc}'
+            )
+            monitor = None
 
     dataset_name_final: Final[str] = dataset_name
     base_result = run_lstm_on_etth_dataset(
@@ -122,8 +129,14 @@ def run_lstm_etth_experiment(
     )
 
     if monitor is not None:
-        measurement = monitor.end_window('lstm_etth_experiment')
-        gpu_total_energy_joules = float(measurement.total_energy)
+        try:
+            measurement = monitor.end_window('lstm_etth_experiment')
+            gpu_total_energy_joules = float(measurement.total_energy)
+        except Exception as exc:
+            _logger.warning(
+                    f'ZeusMonitor failed during LSTM experiment measurement, GPU metrics will be skipped: {exc}'
+            )
+            gpu_total_energy_joules = 0.0
 
     wall_seconds_total = float(time.perf_counter() - wall_start)
     cpu_times_after = process.cpu_times()
@@ -174,13 +187,13 @@ def run_lstm_etth_experiment(
 def run_informer_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int = 10000,
-        train_ratio: float = 0.8,
-        informer_script_path: str = './informer_experiment_wrapper.py',
-        metrics_json_path: str = './informer_metrics/etth_metrics.json',
-        extra_args: list[str] | None = None,
-        timeout_seconds: int = 36000,
-        model_name: str = 'informer-original',
+        max_rows: int,
+        train_ratio: float,
+        informer_script_path: str,
+        metrics_json_path: str,
+        extra_args: list[str] | None,
+        timeout_seconds: int,
+        model_name: str,
 ) -> ExperimentResult:
     """
     Высокоуровневая функция запуска эксперимента с Informer на ETTh-датасетах (ETTh1, ETTh2)
@@ -277,9 +290,15 @@ def run_informer_etth_experiment(
     monitor = None
     gpu_total_energy_joules = 0.0
     if torch.cuda.is_available():
-        current_device = torch.cuda.current_device()
-        monitor = ZeusMonitor(gpu_indices=[current_device])
-        monitor.begin_window('informer_etth_experiment')
+        try:
+            current_device = torch.cuda.current_device()
+            monitor = ZeusMonitor(gpu_indices=[current_device])
+            monitor.begin_window('informer_etth_experiment')
+        except Exception as exc:
+            _logger.warning(
+                    f'ZeusMonitor could not be initialized for Informer experiment, GPU metrics will be skipped: {exc}'
+            )
+            monitor = None
 
     dataset_name_final: Final[str] = dataset_name
     base_result = run_informer_external(
@@ -289,8 +308,14 @@ def run_informer_etth_experiment(
     )
 
     if monitor is not None:
-        measurement = monitor.end_window('informer_etth_experiment')
-        gpu_total_energy_joules = float(measurement.total_energy)
+        try:
+            measurement = monitor.end_window('informer_etth_experiment')
+            gpu_total_energy_joules = float(measurement.total_energy)
+        except Exception as exc:
+            _logger.warning(
+                    f'ZeusMonitor failed during Informer experiment measurement, GPU metrics will be skipped: {exc}'
+            )
+            gpu_total_energy_joules = 0.0
 
     wall_seconds_total = float(time.perf_counter() - wall_start)
     cpu_times_after = process.cpu_times()

@@ -1,3 +1,4 @@
+# edlm_search/src/edlm_search/baseline_optuna.py
 from __future__ import annotations
 
 import logging
@@ -314,9 +315,16 @@ def _train_one_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     gpu_monitor = None
-    if ZeusMonitor is not None:
-        gpu_monitor = ZeusMonitor(gpu_indices=[0])
-        gpu_monitor.begin_window('lstm_train_eval')
+    if ZeusMonitor is not None and torch.cuda.is_available():
+        try:
+            current_device_index = torch.cuda.current_device()
+            gpu_monitor = ZeusMonitor(gpu_indices=[current_device_index])
+            gpu_monitor.begin_window('lstm_train_eval')
+        except Exception as exc:
+            logger.warning(
+                    f'ZeusMonitor could not be initialized, GPU energy metrics will be skipped: {exc}'
+            )
+            gpu_monitor = None
 
     if torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats(device=device)
@@ -348,8 +356,14 @@ def _train_one_model(
 
     energy_joules = 0.0
     if gpu_monitor is not None:
-        measurement = gpu_monitor.end_window('lstm_train_eval')
-        energy_joules = float(measurement.total_energy)
+        try:
+            measurement = gpu_monitor.end_window('lstm_train_eval')
+            energy_joules = float(measurement.total_energy)
+        except Exception as exc:
+            logger.warning(
+                    f'ZeusMonitor failed during measurement, GPU energy metric will be skipped: {exc}'
+            )
+            energy_joules = 0.0
 
     y_pred = np.concatenate(all_preds, axis=0).reshape(-1)
     y_true = np.concatenate(all_targets, axis=0).reshape(-1)

@@ -1,8 +1,10 @@
+# edlm_search/src/edlm_search/runner.py
 import asyncio
 import base64
 import contextlib
 import importlib.util
 import json
+import logging
 import os
 import pickle
 import sys
@@ -18,6 +20,8 @@ from tblib import pickling_support
 from zeus.monitor import ZeusMonitor
 
 from .candidate import Candidate
+
+logger = logging.getLogger(__name__)
 
 
 class Runner(Protocol):
@@ -256,8 +260,14 @@ def _execute_candidate_script(temp_dir: str, run_args: dict):
 
             send_event('start', {'process_start_time': datetime.now().isoformat()})
 
-            if torch.cuda.is_available():
-                monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
+            if torch.cuda.is_available() and ZeusMonitor is not None:
+                try:
+                    monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
+                except Exception as exc:
+                    monitor = None
+                    logger.warning(
+                            f'ZeusMonitor could not be initialized in candidate process, GPU metrics will be skipped: {exc}'
+                    )
 
             spec = importlib.util.spec_from_file_location('main', 'main.py')
             if spec is None or spec.loader is None:
@@ -271,7 +281,7 @@ def _execute_candidate_script(temp_dir: str, run_args: dict):
 
             main_generator = main_module.main(**run_args)
 
-            if monitor:
+            if monitor is not None:
                 monitor.begin_window('run')
             for epoch_predictions in main_generator:
                 send_event('epoch_result', {'predictions': epoch_predictions})
@@ -283,9 +293,15 @@ def _execute_candidate_script(temp_dir: str, run_args: dict):
             send_event('exception', {'exc_info': exc_info_b64})
             sys.exit(1)
         else:
-            if monitor:
-                mes = monitor.end_window('run')
-                result = {'total_energy_joules': mes.total_energy}
+            if monitor is not None:
+                try:
+                    mes = monitor.end_window('run')
+                    result = {'total_energy_joules': mes.total_energy}
+                except Exception as exc:
+                    logger.warning(
+                            f'ZeusMonitor failed during measurement in candidate process, GPU metrics will be skipped: {exc}'
+                    )
+                    result = {'total_energy_joules': 0.0}
                 send_event('zeus', result)
             else:
                 send_event('zeus', {'total_energy_joules': 0.0})
