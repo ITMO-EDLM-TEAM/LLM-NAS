@@ -4,13 +4,14 @@ from typing import Final
 
 from .datasets import load_ett_csv_dataset
 from .informer_runner import run_informer_external
-from .lstm_runner import run_lstm_on_ettm1
+from .lstm_runner import run_lstm_on_etth_dataset
 from .types import ExperimentResult
 from .types import InformerRunnerConfig
 from .types import LSTMHyperParams
 
 
-def run_lstm_ettm1_experiment(
+def run_lstm_etth_experiment(
+        dataset_name: str,
         csv_path: str,
         max_rows: int = 10000,
         train_ratio: float = 0.8,
@@ -24,7 +25,7 @@ def run_lstm_ettm1_experiment(
         model_name: str = 'lstm-baseline',
 ) -> ExperimentResult:
     """
-    Высокоуровневая функция запуска эксперимента с LSTM на ETTm1 (или совместимом) для использования в Jupyter.
+    Высокоуровневая функция запуска эксперимента с LSTM на ETTh-датасетах (ETTh1, ETTh2).
 
     Все параметры передаются явно и имеют значения по умолчанию, чтобы удобно вызывать
     функцию из ноутбука. Функция не привязана к конкретной структуре директорий и
@@ -32,8 +33,10 @@ def run_lstm_ettm1_experiment(
 
     Параметры
     ----------
+    dataset_name : str
+        Имя датасета (например, 'ETTh1' или 'ETTh2').
     csv_path : str
-        Полный путь к CSV-файлу с датасетом (например, '/data/ETTm1.csv').
+        Полный путь к CSV-файлу с датасетом.
     max_rows : int
         Максимальное количество строк, которые загружаются из датасета (0 или меньше — без ограничения).
     train_ratio : float
@@ -76,29 +79,31 @@ def run_lstm_ettm1_experiment(
             num_epochs=num_epochs,
     )
 
-    dataset_name: Final[str] = 'ETT-like'
-    result = run_lstm_on_ettm1(
+    dataset_name_final: Final[str] = dataset_name
+    result = run_lstm_on_etth_dataset(
             train_df=train_df,
             valid_df=valid_df,
             hyperparams=hyperparams,
-            dataset_name=dataset_name,
+            dataset_name=dataset_name_final,
             model_name=model_name,
     )
     return result
 
 
-def run_informer_ettm1_experiment(
+def run_informer_etth_experiment(
+        dataset_name: str,
         csv_path: str,
         max_rows: int = 10000,
         train_ratio: float = 0.8,
         informer_script_path: str = './informer_experiment_wrapper.py',
-        metrics_json_path: str = './informer_metrics/ettm1_metrics.json',
+        metrics_json_path: str = './informer_metrics/etth_metrics.json',
         extra_args: list[str] | None = None,
         timeout_seconds: int = 36000,
         model_name: str = 'informer-original',
 ) -> ExperimentResult:
     """
-    Высокоуровневая функция запуска эксперимента с Informer на ETTm1 (или совместимом) для использования в Jupyter.
+    Высокоуровневая функция запуска эксперимента с Informer на ETTh-датасетах (ETTh1, ETTh2)
+    для использования в Jupyter.
 
     Для работы требуется внешний скрипт (например, из репозитория Informer2020),
     который:
@@ -108,8 +113,10 @@ def run_informer_ettm1_experiment(
 
     Параметры
     ----------
+    dataset_name : str
+        Имя датасета (например, 'ETTh1' или 'ETTh2').
     csv_path : str
-        Полный путь к CSV-файлу с датасетом (например, '/data/ETTm1.csv').
+        Полный путь к CSV-файлу с датасетом.
     max_rows : int
         Максимальное количество строк, которые загружаются из датасета (0 или меньше — без ограничения).
         Параметр добавлен для единообразия интерфейса, но на практике разбиение и выборка
@@ -148,10 +155,10 @@ def run_informer_ettm1_experiment(
             timeout_seconds=timeout_seconds,
     )
 
-    dataset_name: Final[str] = 'ETT-like'
+    dataset_name_final: Final[str] = dataset_name
     result = run_informer_external(
             config=informer_config,
-            dataset_name=dataset_name,
+            dataset_name=dataset_name_final,
             model_name=model_name,
     )
     return result

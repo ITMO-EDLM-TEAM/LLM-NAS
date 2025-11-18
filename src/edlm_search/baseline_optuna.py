@@ -12,7 +12,7 @@ from torch.utils.data import Dataset
 
 
 class ETTSequenceDataset(Dataset):
-    """Dataset для последовательностного прогнозирования по датасету ETTm1."""
+    """Dataset для последовательностного прогнозирования по ETT-датасетам (ETTh1, ETTh2 и т.п.)."""
 
     def __init__(
             self,
@@ -153,15 +153,16 @@ class SimpleLSTMForecaster(nn.Module):
         return prediction
 
 
-def _create_dataloaders_for_ettm1(
+def create_dataloaders_for_etth(
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
         seq_len: int,
         pred_len: int,
         batch_size: int,
+        target_column: str,
 ) -> tuple[DataLoader, DataLoader, list[str]]:
     """
-    Создаёт DataLoader'ы для обучения и валидации на ETTm1.
+    Создаёт DataLoader'ы для обучения и валидации на ETTh-датасетах (ETTh1, ETTh2).
 
     Параметры
     ----------
@@ -175,29 +176,37 @@ def _create_dataloaders_for_ettm1(
         Длина предсказания.
     batch_size : int
         Размер батча.
+    target_column : str
+        Имя колонки с целевой переменной (например, 'OT').
 
     Возвращает
     ----------
     tuple[DataLoader, DataLoader, list[str]]
         Обучающий и валидационный DataLoader, а также список колонок-признаков.
     """
-    if "OT" not in train_df.columns:
-        raise ValueError("В датафрейме отсутствует колонка 'OT'.")
+    if target_column not in train_df.columns:
+        raise ValueError(f"В обучающем датафрейме отсутствует колонка {target_column!r}.")
+    if target_column not in valid_df.columns:
+        raise ValueError(f"В валидационном датафрейме отсутствует колонка {target_column!r}.")
 
-    feature_columns = [c for c in train_df.columns if c not in ("date", "OT")]
+    feature_columns = [c for c in train_df.columns if c not in ("date", target_column)]
+
+    if not feature_columns:
+        raise ValueError("Список признаков пуст — невозможно построить датасет для обучения.")
+
     train_dataset = ETTSequenceDataset(
             df=train_df,
             seq_len=seq_len,
             pred_len=pred_len,
             feature_columns=feature_columns,
-            target_column="OT",
+            target_column=target_column,
     )
     valid_dataset = ETTSequenceDataset(
             df=valid_df,
             seq_len=seq_len,
             pred_len=pred_len,
             feature_columns=feature_columns,
-            target_column="OT",
+            target_column=target_column,
     )
 
     train_loader = DataLoader(
@@ -292,16 +301,17 @@ def _train_one_model(
     return mse
 
 
-def run_optuna_for_ettm1(
+def run_optuna_for_etth(
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
         seq_len: int,
         pred_len: int,
         num_epochs: int,
         n_trials: int,
+        target_column: str,
 ) -> optuna.Study:
     """
-    Запускает оптимизацию гиперпараметров LSTM-модели для ETTm1 с помощью Optuna.
+    Запускает оптимизацию гиперпараметров LSTM-модели для ETTh-датасетов с помощью Optuna.
 
     Параметры
     ----------
@@ -317,6 +327,8 @@ def run_optuna_for_ettm1(
         Количество эпох обучения для каждой попытки.
     n_trials : int
         Число испытаний Optuna.
+    target_column : str
+        Имя колонки целевой переменной (например, 'OT').
 
     Возвращает
     ----------
@@ -347,12 +359,13 @@ def run_optuna_for_ettm1(
         learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
         batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
 
-        train_loader, valid_loader, feature_columns = _create_dataloaders_for_ettm1(
+        train_loader, valid_loader, feature_columns = create_dataloaders_for_etth(
                 train_df=train_df,
                 valid_df=valid_df,
                 seq_len=seq_len,
                 pred_len=pred_len,
                 batch_size=batch_size,
+                target_column=target_column,
         )
 
         mse = _train_one_model(
@@ -370,7 +383,7 @@ def run_optuna_for_ettm1(
 
     study = optuna.create_study(
             direction="minimize",
-            study_name="ettm1_lstm_mse",
+            study_name="etth_lstm_mse",
     )
     study.optimize(objective, n_trials=n_trials)
     return study

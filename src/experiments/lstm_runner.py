@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import pandas as pd
 import torch
+from edlm_search.baseline_optuna import _train_one_model
+from edlm_search.baseline_optuna import create_dataloaders_for_etth
 
 from .types import ExperimentResult
 from .types import LSTMHyperParams
-from ..edlm_search.baseline_optuna import _create_dataloaders_for_ettm1
-from ..edlm_search.baseline_optuna import _train_one_model
 
 
-def run_lstm_on_ettm1(
+def run_lstm_on_etth_dataset(
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
         hyperparams: LSTMHyperParams,
@@ -17,7 +17,7 @@ def run_lstm_on_ettm1(
         model_name: str,
 ) -> ExperimentResult:
     """
-    Запускает LSTM-модель на датасете ETTm1 и возвращает результат эксперимента.
+    Запускает LSTM-модель на ETTh-датасете (ETTh1 или ETTh2) и возвращает результат эксперимента.
 
     Параметры
     ----------
@@ -28,7 +28,7 @@ def run_lstm_on_ettm1(
     hyperparams : LSTMHyperParams
         Гиперпараметры LSTM-модели и обучения.
     dataset_name : str
-        Имя датасета (например, 'ETTm1').
+        Имя датасета (например, 'ETTh1' или 'ETTh2').
     model_name : str
         Имя модели (например, 'lstm-baseline').
 
@@ -37,12 +37,13 @@ def run_lstm_on_ettm1(
     ExperimentResult
         Результат эксперимента с метрикой MSE на валидации.
     """
-    train_loader, valid_loader, feature_columns = _create_dataloaders_for_ettm1(
+    train_loader, valid_loader, feature_columns = create_dataloaders_for_etth(
             train_df=train_df,
             valid_df=valid_df,
             seq_len=hyperparams.seq_len,
             pred_len=hyperparams.pred_len,
             batch_size=hyperparams.batch_size,
+            target_column='OT',
     )
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
