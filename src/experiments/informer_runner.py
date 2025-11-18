@@ -22,6 +22,11 @@ def run_informer_external(
       2. Запускает обучение/оценку модели Informer.
       3. По завершении записывает JSON вида {"mse": <float>, "mae": <float>, ...}.
 
+    Метрики могут дополнительно включать:
+      * 'total_runtime_seconds'
+      * 'total_energy_joules'
+      и другие числовые показатели.
+
     Параметры
     ----------
     config : InformerRunnerConfig

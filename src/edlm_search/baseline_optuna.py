@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import logging
+import resource
+import time
 from typing import Final
 
 import numpy as np
@@ -9,6 +12,35 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
+
+logger = logging.getLogger(__name__)
+
+try:
+    from zeus.monitor import ZeusMonitor
+except ImportError:  # pragma: no cover
+    ZeusMonitor = None  # type: ignore[assignment]
+
+_LAST_RUN_DIAGNOSTICS: dict[str, object] | None = None
+
+
+def get_last_run_diagnostics() -> dict[str, object]:
+    """
+    Return diagnostics collected during the most recent LSTM training run.
+
+    The dictionary may contain the following keys:
+      * 'train_time_seconds' (float)
+      * 'eval_time_seconds' (float)
+      * 'total_energy_joules' (float)
+      * 'peak_gpu_memory_mb' (float)
+      * 'max_rss_mb' (float)
+      * 'validation_predictions' (np.ndarray)
+      * 'validation_targets' (np.ndarray)
+
+    If training has not been run yet, an empty dict is returned.
+    """
+    if _LAST_RUN_DIAGNOSTICS is None:
+        return {}
+    return dict(_LAST_RUN_DIAGNOSTICS)
 
 
 class ETTSequenceDataset(Dataset):
@@ -264,6 +296,13 @@ def _train_one_model(
     float
         MSE на валидационном наборе.
     """
+    if num_epochs < 1:
+        raise ValueError("Число эпох должно быть положительным.")
+    if learning_rate <= 0.0:
+        raise ValueError("Скорость обучения должна быть положительной.")
+
+    global _LAST_RUN_DIAGNOSTICS
+
     model = SimpleLSTMForecaster(
             input_size=input_size,
             hidden_size=hidden_size,
@@ -274,6 +313,15 @@ def _train_one_model(
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
+    gpu_monitor = None
+    if ZeusMonitor is not None:
+        gpu_monitor = ZeusMonitor(gpu_indices=[0])
+        gpu_monitor.begin_window('lstm_train_eval')
+
+    if torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device=device)
+
+    train_start = time.perf_counter()
     for _ in range(num_epochs):
         model.train()
         for batch_x, batch_y in train_loader:
@@ -284,7 +332,9 @@ def _train_one_model(
             loss = criterion(preds, batch_y)
             loss.backward()
             optimizer.step()
+    train_end = time.perf_counter()
 
+    eval_start = time.perf_counter()
     model.eval()
     all_preds: list[np.ndarray] = []
     all_targets: list[np.ndarray] = []
@@ -294,10 +344,46 @@ def _train_one_model(
             preds = model(batch_x)
             all_preds.append(preds.cpu().numpy())
             all_targets.append(batch_y.numpy())
+    eval_end = time.perf_counter()
+
+    energy_joules = 0.0
+    if gpu_monitor is not None:
+        measurement = gpu_monitor.end_window('lstm_train_eval')
+        energy_joules = float(measurement.total_energy)
 
     y_pred = np.concatenate(all_preds, axis=0).reshape(-1)
     y_true = np.concatenate(all_targets, axis=0).reshape(-1)
     mse = float(np.mean((y_true - y_pred) ** 2))
+
+    peak_gpu_memory_mb = 0.0
+    if torch.cuda.is_available():
+        try:
+            peak_bytes = torch.cuda.max_memory_allocated(device=device)
+            peak_gpu_memory_mb = float(peak_bytes) / (1024.0 * 1024.0)
+        except RuntimeError:
+            peak_gpu_memory_mb = 0.0
+
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    max_rss_mb = float(usage.ru_maxrss) / 1024.0
+
+    train_time_seconds = float(train_end - train_start)
+    eval_time_seconds = float(eval_end - eval_start)
+
+    logger.info(
+            f'LSTM training finished: train_time={train_time_seconds:.3f}s, '
+            f'eval_time={eval_time_seconds:.3f}s, mse={mse:.6f}'
+    )
+
+    _LAST_RUN_DIAGNOSTICS = {
+        'train_time_seconds': train_time_seconds,
+        'eval_time_seconds': eval_time_seconds,
+        'total_energy_joules': energy_joules,
+        'peak_gpu_memory_mb': peak_gpu_memory_mb,
+        'max_rss_mb': max_rss_mb,
+        'validation_predictions': y_pred,
+        'validation_targets': y_true,
+    }
+
     return mse
 
 

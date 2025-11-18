@@ -23,6 +23,10 @@ class ETTM1Evaluator:
     The evaluator is responsible for executing a candidate inside the sandboxed runner,
     collecting the validation predictions produced at the end of each epoch, and
     computing the chosen regression metric against ground-truth targets.
+
+    In addition to the regression metric, the evaluator records:
+      * total_energy_joules (if provided by the runner)
+      * wall_time_seconds (elapsed wall-clock time between process start and last epoch result)
     """
 
     def __init__(
@@ -61,6 +65,8 @@ class ETTM1Evaluator:
         run_args = {'num_epochs': self._num_epochs}
         latest_predictions: np.ndarray | None = None
         energy_joules: float | None = None
+        process_start_time = None
+        last_epoch_timestamp = None
 
         async for event in runner.run(
                 candidate=candidate,
@@ -68,11 +74,17 @@ class ETTM1Evaluator:
                 validation_df=self._valid_df,
                 run_args=run_args,
         ):
-            if 'epoch_result' in event:
+            if 'process_start_time' in event:
+                process_start_time = event['process_start_time']
+                _LOGGER.info(
+                        f'Получено время старта процесса кандидата: {process_start_time.isoformat()}'
+                )
+            elif 'epoch_result' in event:
                 predictions = np.asarray(event['epoch_result'], dtype=np.float64).reshape(-1)
                 if predictions.size == 0:
                     raise RuntimeError('Кандидат вернул пустые предсказания на валидации.')
                 latest_predictions = predictions
+                last_epoch_timestamp = event.get('timestamp')
                 _LOGGER.info(
                         f'Получены валидационные предсказания из {predictions.size} значений.'
                 )
@@ -93,9 +105,18 @@ class ETTM1Evaluator:
         if energy_joules is not None:
             metrics['total_energy_joules'] = energy_joules
 
+        wall_time_seconds = 0.0
+        if process_start_time is not None and last_epoch_timestamp is not None:
+            wall_time_seconds = float(
+                    (last_epoch_timestamp - process_start_time).total_seconds()
+            )
+            metrics['wall_time_seconds'] = wall_time_seconds
+
         _LOGGER.info(
                 f'Оценка кандидата "{candidate.idea}" завершена: '
-                f'{self._metric_name}={mse_value:.6f}.'
+                f'{self._metric_name}={mse_value:.6f}, '
+                f'energy={energy_joules if energy_joules is not None else 0.0:.4f} Дж, '
+                f'wall_time={wall_time_seconds:.3f} c.'
         )
         return metrics
 

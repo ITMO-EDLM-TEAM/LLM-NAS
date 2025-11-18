@@ -1,14 +1,18 @@
 import pathlib
 import re
 from inspect import cleandoc
+from typing import Final
 
-from jinja2 import Environment, FileSystemLoader, StrictUndefined
+import tiktoken
+from jinja2 import Environment
+from jinja2 import FileSystemLoader
+from jinja2 import StrictUndefined
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionUserMessageParam
 
 here = pathlib.Path(__file__).parent.resolve()
 jinja_env = Environment(
-    loader=FileSystemLoader(str(here / 'prompts')), undefined=StrictUndefined
+        loader=FileSystemLoader(str(here / 'prompts')), undefined=StrictUndefined
 )
 
 
@@ -24,6 +28,54 @@ class LLMPipeline:
     def __init__(self, async_openai: AsyncOpenAI, model_name: str):
         self._async_openai = async_openai
         self._model_name: str = model_name
+        self._prompt_tokens_total: int = 0
+        self._completion_tokens_total: int = 0
+        self._encoding: Final | None = self._init_encoding()
+
+    def _init_encoding(self):
+        """
+        Initialize tokenizer encoding for token counting.
+
+        If the encoding cannot be created, None is returned and token counting
+        will silently fall back to zero.
+        """
+        try:
+            return tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            return None
+
+    def _count_tokens(self, text: str) -> int:
+        """
+        Count tokens in the given text using the configured encoding.
+
+        If encoding is not available, returns 0.
+        """
+        if self._encoding is None:
+            return 0
+        if not text:
+            return 0
+        return len(self._encoding.encode(text))
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        """
+        Total number of prompt tokens sent to the LLM through this pipeline.
+        """
+        return self._prompt_tokens_total
+
+    @property
+    def total_completion_tokens(self) -> int:
+        """
+        Total number of completion tokens received from the LLM through this pipeline.
+        """
+        return self._completion_tokens_total
+
+    def reset_token_counters(self) -> None:
+        """
+        Reset accumulated token usage statistics to zero.
+        """
+        self._prompt_tokens_total = 0
+        self._completion_tokens_total = 0
 
     def _parse_xml_files(self, xml_string: str) -> dict[str, str]:
         """
@@ -41,20 +93,12 @@ class LLMPipeline:
         -------
             A dictionary where keys are file paths and values are file contents.
         """
-        # try prase cdata?
-        # try parse markdown code blocks?
         files_dict = {}
 
-        # This regex finds all <file> tags and captures two groups:
-        # 1. ([^"]+): The content of the path="..." attribute.
-        # 2. (.+?): The content inside the tag (non-greedy).
-        # re.DOTALL (or re.S) is crucial so that '.' matches newline characters.
         pattern = re.compile(r'<file path="([^"]+)">(.+?)</file>', re.DOTALL)
-
         matches = list(pattern.finditer(xml_string))
 
         if not matches:
-            # Add checks to provide better error messages
             if '<files>' not in xml_string or '</files>' not in xml_string:
                 raise ModelOutputParseError('failed to find <files>...</files> section')
             raise ModelOutputParseError('no <file ...> entries found within <files> section')
@@ -64,10 +108,8 @@ class LLMPipeline:
             content = match.group(2)
 
             if not path:
-                # This is unlikely with the regex, but good practice
                 raise ModelOutputParseError('found a file entry with no path')
 
-            # Use cleandoc to remove leading whitespace from the code block
             cleaned_content = cleandoc(content)
 
             if not cleaned_content.strip():
@@ -78,7 +120,7 @@ class LLMPipeline:
         return files_dict
 
     async def generate_files_from_template(
-        self, template_name: str, **kwargs
+            self, template_name: str, **kwargs
     ) -> tuple[str, dict[str, str]]:
         """
         Generate files from a Jinja2 template rendered with the given context.
@@ -94,15 +136,25 @@ class LLMPipeline:
         template_name = template_name.removesuffix('.jinja').removesuffix('.md')
         prompt_template = jinja_env.get_template(f'{template_name}.md.jinja')
 
+        prompt_content = prompt_template.render(**kwargs)
         prompt: ChatCompletionUserMessageParam = {
             'role': 'user',
-            'content': prompt_template.render(**kwargs),
+            'content': prompt_content,
         }
 
+        prompt_tokens = self._count_tokens(prompt_content)
+        self._prompt_tokens_total += prompt_tokens
+
         response = await self._async_openai.chat.completions.create(
-            messages=[prompt], model=self._model_name
+                messages=[prompt], model=self._model_name
         )
         output = response.choices[0].message.content
+        if output is None:
+            raise ModelOutputParseError('language model returned empty content')
+
+        completion_tokens = self._count_tokens(output)
+        self._completion_tokens_total += completion_tokens
+
         print(output)
         assert output
 
