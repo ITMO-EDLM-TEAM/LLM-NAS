@@ -25,9 +25,28 @@ class ModelOutputParseError(Exception):
 class LLMPipeline:
     """Manages interactions with a language model to generate and parse responses."""
 
-    def __init__(self, async_openai: AsyncOpenAI, model_name: str):
+    def __init__(
+            self,
+            async_openai: AsyncOpenAI,
+            model_name: str,
+            temperature: float,
+            top_p: float,
+    ):
+        if async_openai is None:
+            raise ValueError('Parameter "async_openai" must be provided.')
+        if not model_name or not model_name.strip():
+            raise ValueError('Parameter "model_name" must be a non-empty string.')
+        temperature_value = float(temperature)
+        if temperature_value < 0.0:
+            raise ValueError('Parameter "temperature" must be non-negative.')
+        top_p_value = float(top_p)
+        if not 0.0 < top_p_value <= 1.0:
+            raise ValueError('Parameter "top_p" must be within (0, 1].')
+
         self._async_openai = async_openai
-        self._model_name: str = model_name
+        self._model_name: str = model_name.strip()
+        self._temperature: float = temperature_value
+        self._top_p: float = top_p_value
         self._prompt_tokens_total: int = 0
         self._completion_tokens_total: int = 0
         self._encoding: Final | None = self._init_encoding()
@@ -146,7 +165,10 @@ class LLMPipeline:
         self._prompt_tokens_total += prompt_tokens
 
         response = await self._async_openai.chat.completions.create(
-                messages=[prompt], model=self._model_name
+                messages=[prompt],
+                model=self._model_name,
+                temperature=self._temperature,
+                top_p=self._top_p,
         )
         output = response.choices[0].message.content
         if output is None:
