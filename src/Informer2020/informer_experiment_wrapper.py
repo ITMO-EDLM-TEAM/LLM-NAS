@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Final
 
 import numpy as np
+import pandas as pd
 
 try:
     from zeus.monitor import ZeusMonitor
@@ -116,7 +117,9 @@ def _filter_extra_args(extra_args: list[str]) -> list[str]:
     return filtered
 
 
-def _load_latest_metrics(results_root: str) -> dict[str, float]:
+def _load_latest_metrics(
+        results_root: str,
+) -> tuple[dict[str, float], np.ndarray, np.ndarray, Path]:
     """
     Находит последний файл metrics.npy в каталоге результатов и возвращает метрики.
 
@@ -171,20 +174,38 @@ def _load_latest_metrics(results_root: str) -> dict[str, float]:
     mape = float(values[3])
     mspe = float(values[4])
 
-    return {
+    setting_dir = latest_file.parent
+    preds_path = setting_dir / 'pred.npy'
+    trues_path = setting_dir / 'true.npy'
+
+    if not preds_path.is_file() or not trues_path.is_file():
+        raise FileNotFoundError(
+                f'В каталоге {setting_dir} не найдены файлы pred.npy и true.npy.'
+        )
+
+    preds = np.load(preds_path)
+    trues = np.load(trues_path)
+
+    if preds.shape != trues.shape:
+        raise ValueError(
+                f'Формы pred.npy и true.npy не совпадают: {preds.shape} vs {trues.shape}.'
+        )
+
+    metrics = {
         'mse': mse,
         'mae': mae,
         'rmse': rmse,
         'mape': mape,
         'mspe': mspe,
     }
+    return metrics, trues, preds, setting_dir
 
 
 def _run_informer_and_get_metrics(
         data_path: str,
         num_epochs: int,
         extra_args: list[str],
-) -> dict[str, float]:
+) -> tuple[dict[str, float], np.ndarray, np.ndarray, str, Path]:
     """
     Запускает обучение и оценку модели Informer и возвращает метрики.
 
@@ -287,13 +308,24 @@ def _run_informer_and_get_metrics(
         )
 
     results_dir = project_root / 'results'
-    metrics = _load_latest_metrics(results_root=str(results_dir))
-    metrics['total_runtime_seconds'] = total_runtime_seconds
-    metrics['total_energy_joules'] = total_energy_joules
-    return metrics
+    base_metrics, y_true, y_pred, setting_dir = _load_latest_metrics(
+            results_root=str(results_dir)
+    )
+    base_metrics['total_runtime_seconds'] = total_runtime_seconds
+    base_metrics['total_energy_joules'] = total_energy_joules
+    return base_metrics, y_true, y_pred, dataset_name, setting_dir
 
 
-def _save_metrics(metrics_path: str, metrics: dict[str, float]) -> None:
+def _save_metrics(
+        metrics_path: str,
+        metrics: dict[str, float],
+        dataset_name: str,
+        model_name: str,
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+        setting_dir: Path,
+        args: argparse.Namespace,
+) -> None:
     """
     Сохраняет метрики в JSON-файл.
 
@@ -304,12 +336,41 @@ def _save_metrics(metrics_path: str, metrics: dict[str, float]) -> None:
     metrics : dict[str, float]
         Словарь метрик.
     """
-    metrics_dir = os.path.dirname(metrics_path)
-    if metrics_dir and not os.path.exists(metrics_dir):
-        os.makedirs(metrics_dir, exist_ok=True)
+    metrics_path_obj = Path(metrics_path)
+    metrics_dir = metrics_path_obj.parent
+    if metrics_dir and not metrics_dir.exists():
+        metrics_dir.mkdir(parents=True, exist_ok=True)
 
-    with open(metrics_path, 'w', encoding='utf-8') as f:
-        json.dump(metrics, f, ensure_ascii=False, indent=2)
+    predictions_csv_path = metrics_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
+
+    df_predictions = pd.DataFrame(
+            {
+                'y_true': y_true.reshape(-1),
+                'y_pred': y_pred.reshape(-1),
+            }
+    )
+    df_predictions.to_csv(predictions_csv_path, index=False)
+
+    hyperparams = {
+        'train_epochs': int(getattr(args, 'epochs', 0)),
+        'data_path': args.data_path,
+        'extra_args': list(getattr(args, 'extra_args', [])),
+    }
+
+    diagnostics = {
+        'model_name': model_name,
+        'dataset_name': dataset_name,
+        'metrics': metrics,
+        'hyperparams': hyperparams,
+        'artifacts': {
+            'predictions_csv': str(predictions_csv_path),
+            'predictions_npy': str(setting_dir / 'pred.npy'),
+            'targets_npy': str(setting_dir / 'true.npy'),
+        },
+    }
+
+    with metrics_path_obj.open('w', encoding='utf-8') as f:
+        json.dump(diagnostics, f, ensure_ascii=False, indent=2)
 
 
 def main() -> None:
@@ -324,12 +385,21 @@ def main() -> None:
     """
     args = _parse_args()
     extra_args = list(getattr(args, 'extra_args', []))
-    metrics = _run_informer_and_get_metrics(
+    metrics, y_true, y_pred, dataset_name, setting_dir = _run_informer_and_get_metrics(
             data_path=args.data_path,
             num_epochs=args.epochs,
             extra_args=extra_args,
     )
-    _save_metrics(metrics_path=args.metrics_path, metrics=metrics)
+    _save_metrics(
+            metrics_path=args.metrics_path,
+            metrics=metrics,
+            dataset_name=dataset_name,
+            model_name='informer',
+            y_true=y_true,
+            y_pred=y_pred,
+            setting_dir=setting_dir,
+            args=args,
+    )
 
 
 if __name__ == '__main__':

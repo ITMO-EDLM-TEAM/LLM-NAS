@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+from typing import Any
 
 from .types import ExperimentResult
 from .types import InformerRunnerConfig
@@ -97,15 +98,32 @@ def run_informer_external(
         raise ValueError('JSON с метриками должен быть объектом (dict).')
 
     metrics: dict[str, float] = {}
-    for key, value in raw.items():
-        try:
-            metrics[key] = float(value)
-        except (TypeError, ValueError) as exc:
-            raise ValueError(f'Значение метрики "{key}" не может быть приведено к float.') from exc
-
-    extra_info: dict[str, float] = {
+    extra_info: dict[str, Any] = {
         'timeout_seconds': float(config.timeout_seconds),
     }
+
+    metrics_section = raw.get('metrics')
+    artifacts_section = raw.get('artifacts')
+    hyperparams_section = raw.get('hyperparams')
+
+    if isinstance(metrics_section, dict):
+        for key, value in metrics_section.items():
+            try:
+                metrics[key] = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'Значение метрики "{key}" не может быть приведено к float.') from exc
+        if hyperparams_section is not None:
+            extra_info['hyperparams'] = hyperparams_section
+        if artifacts_section is not None:
+            extra_info['artifacts'] = artifacts_section
+    else:
+        for key, value in raw.items():
+            if key in ('metrics', 'artifacts', 'hyperparams'):
+                continue
+            try:
+                metrics[key] = float(value)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f'Значение метрики "{key}" не может быть приведено к float.') from exc
 
     return ExperimentResult(
             model_name=model_name,
