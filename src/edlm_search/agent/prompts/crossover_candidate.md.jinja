@@ -44,7 +44,38 @@ When designing the new child pipeline, you must preserve the strengths of the pa
 required interfaces and avoiding the issues that led to this failure.
 {% endif %}
 
-# Requirements
+# Dataset format and constraints
+
+Both parents were evaluated on ETT-small-h style datasets (variants such as ETTh1 or ETTh2). Your child solution must
+remain compatible with the same data format.
+
+At runtime, the orchestration code will:
+
+* pass `train_df` and `valid_df` DataFrames with the following schema:
+  `date, HUFL, HULL, MUFL, MULL, LUFL, LULL, OT`;
+* save them into Parquet files;
+* call your `main(train_data_path, valid_data_path, num_epochs)` function.
+
+Important constraints:
+
+* `OT` is the only target; all other numeric columns are features.
+* You must not hardcode dataset names, frequencies or sizes. The child pipeline must work for any ETT-small-h variant
+  (e.g., ETTh1, ETTh2) as long as the column schema is the same.
+* The validation DataFrame can have arbitrary length. At the end of each epoch you must produce one prediction per row
+  of `valid_df`, in the original order.
+* Predictions must be finite numeric values (no NaN, no infinities) and are compared to `valid_df['OT']` using mean
+  squared error (MSE).
+
+# Runtime environment
+
+You may use only:
+
+* Python standard library;
+* `numpy`;
+* `pandas`;
+* `torch` (PyTorch).
+
+You must not import any additional external libraries beyond what the parent solutions already use from this set.
 
 You must target the following PyTorch device backend when writing your code in `main.py`:
 
@@ -52,30 +83,75 @@ You must target the following PyTorch device backend when writing your code in `
 
 All tensors, models and data that participate in training or inference must be created on
 `torch.device("{{ torch_backend_name }}")`. Do not perform any runtime device auto-detection in the generated code;
-assume that this backend is available.
+assume that this backend is available and use it consistently.
+
+# Design goals for the child pipeline
 
 You must analyse the strengths and weaknesses of both parent solutions (architecture, data handling, training loop)
-and design a new pipeline that is likely to achieve better MSE and faster convergence.
+and design a new pipeline that is likely to achieve:
+
+* better (lower) MSE;
+* stable training for both ETTh1 and ETTh2 style datasets;
+* reasonable convergence speed.
+
+You must:
+
+* keep the critical interfaces and file naming exactly as in the parents;
+* preserve robust ideas from the parents (e.g., good normalisation strategy, effective model structure) that are not
+  responsible for previous failures;
+* fix any issues that led to previous failures described in `previous_failure_message`;
+* simplify and regularise the design where parents are overly complex or redundant;
+* make the data preprocessing and training loop resilient to variations in dataset length and value ranges.
+
+# Required files and interfaces
 
 You must output three files:
 
 * **`main.py`**: The training script, containing:
-    * A `torch.utils.data.Dataset` class for preprocessing.
-    * A `torch.nn.Module` model class with `.from_config(cls, config)` class method.
+    * A `torch.utils.data.Dataset` class for preprocessing that:
+        * accepts a Pandas DataFrame with the ETT-small-h schema;
+        * produces tensors on `torch.device("{{ torch_backend_name }}")`;
+        * supports both training and validation use cases.
+    * A `torch.nn.Module` model class with `.from_config(cls, config)` class method:
+        * uses `model_config.json` to configure the architecture;
+        * validates required fields and creates all layers on the correct device.
     * A `Trainer` class with:
-        * `.from_config(cls, num_epochs, config, model, dataset)`
-        * `.predict(self, df)` returning reverse-transformed predictions.
-        * `.train(self)` — a generator yielding validation predictions at the end of each epoch.
+        * `.from_config(cls, num_epochs, config, model, dataset)`:
+            * consumes training arguments from `training_args.json`;
+            * uses `num_epochs` passed from the orchestrator, not from the config;
+            * prepares optimizers, schedulers and any internal buffers.
+        * `.predict(self, df)` returning reverse-transformed predictions:
+            * takes a DataFrame with the ETT-small-h schema;
+            * returns a **1D NumPy array or list of floats** of length `len(df)`, representing predictions for `OT`
+              in the original row order.
+        * `.train(self)` — a generator yielding validation predictions at the end of each epoch:
+            * for each epoch, evaluates the current model on the full validation set;
+            * yields predictions for `valid_df` as a 1D sequence (same length and order as `valid_df`).
     * A `main(train_data_path, valid_data_path, num_epochs)` function that:
-        * Reads training and validation data from Parquet files.
-        * Yields validation predictions at the end of each epoch.
+        * reads training and validation data from the provided Parquet file paths;
+        * builds Dataset, model and Trainer using `model_config.json` and `training_args.json`;
+        * runs the training loop for exactly `num_epochs` epochs;
+        * yields validation predictions at the end of each epoch, matching `len(valid_df)`.
 
 * **`model_config.json`**: JSON with model architecture parameters.
 
+  It must contain only structural hyperparameters (e.g., layer sizes, dropout rates, embedding dimensions). It must not
+  contain training hyperparameters such as learning rate or batch size.
+
 * **`training_args.json`**: JSON with trainer hyperparameters (learning rate, batch size, etc.).
-  The number of epochs is configured externally.
+
+  The number of epochs is configured externally and must not change the outer training loop even if present here.
 
 You must keep the existing file naming and interface contract exactly as described.
+
+# Numerical stability and robustness
+
+When combining and improving the parent solutions, you must ensure that:
+
+* data normalisation / scaling does not depend on the specific dataset variant;
+* the model can handle long sequences and varying dataset lengths without shape mismatches;
+* all loss values and predictions remain finite;
+* the code does not rely on non-existent columns or hardcoded dataset-specific paths.
 
 # Output format
 
