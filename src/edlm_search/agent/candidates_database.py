@@ -1,4 +1,3 @@
-# edlm_search/candidates_database.py
 from __future__ import annotations
 
 import math
@@ -6,15 +5,22 @@ from dataclasses import dataclass
 from dataclasses import field
 from typing import Iterable
 from typing import Mapping
+from typing import TYPE_CHECKING
 
 import pandas as pd
+
+if TYPE_CHECKING:
+    from .candidate import Candidate
 
 
 @dataclass(frozen=True)
 class CandidateRecord:
     """Result of a single candidate evaluation."""
+
     candidate_id: int
+    candidate: "Candidate"
     idea: str
+    backend_name: str
     metrics: dict[str, float]
     metadata: dict[str, object] = field(default_factory=dict)
 
@@ -30,25 +36,43 @@ class CandidateDatabase:
     def __init__(self) -> None:
         self._records: list[CandidateRecord] = []
         self._df = pd.DataFrame(
-                columns=['candidate_id', 'idea', 'metrics', 'metadata'],
+                columns=[
+                    'candidate_id',
+                    'idea',
+                    'backend_name',
+                    'metrics',
+                    'metadata',
+                    'candidate',
+                ],
         )
+        self._next_candidate_id: int = 0
+
+    def __len__(self) -> int:
+        """Return the number of stored candidate records."""
+        return len(self._records)
 
     @property
     def dataframe(self) -> pd.DataFrame:
         """Return a copy of the internal dataframe with all results."""
         return self._df.copy()
 
+    @property
+    def records(self) -> list[CandidateRecord]:
+        """Return a shallow copy of the list of candidate records."""
+        return list(self._records)
+
     def add_result(
             self,
-            candidate_id: int,
-            idea: str,
+            candidate: "Candidate",
             metrics: Mapping[str, float],
+            backend_name: str,
             metadata: dict[str, object] | None = None,
-    ) -> None:
+    ) -> CandidateRecord:
         """Add a new evaluation result to the store.
 
         The method validates that at least one metric is provided and that
-        all metric values are finite numeric scalars.
+        all metric values are finite numeric scalars. Candidate identifiers
+        are assigned sequentially starting from zero.
         """
         if not metrics:
             raise ValueError('Набор метрик пуст — результат оценки кандидата не может быть сохранён.')
@@ -70,9 +94,16 @@ class CandidateDatabase:
         if metadata is None:
             metadata = {}
 
+        candidate_id = self._next_candidate_id
+        self._next_candidate_id += 1
+
+        idea = candidate.idea
+
         record = CandidateRecord(
                 candidate_id=candidate_id,
+                candidate=candidate,
                 idea=idea,
+                backend_name=backend_name,
                 metrics=validated_metrics,
                 metadata=dict(metadata),
         )
@@ -81,10 +112,14 @@ class CandidateDatabase:
         new_row = {
             'candidate_id': candidate_id,
             'idea': idea,
+            'backend_name': backend_name,
             'metrics': validated_metrics,
             'metadata': dict(metadata),
+            'candidate': candidate,
         }
         self._df = pd.concat([self._df, pd.DataFrame([new_row])], ignore_index=True)
+
+        return record
 
     def top_k_by_metric(self, metric_name: str, k: int) -> Iterable[CandidateRecord]:
         """Return top-k candidates sorted by the specified metric (ascending)."""

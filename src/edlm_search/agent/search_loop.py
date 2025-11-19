@@ -89,7 +89,7 @@ class LLMBasedArchitectureSearch:
         runner = self._runner_factory()
         logger.info(f"Запуск оценки кандидата с идеей: {candidate.idea}")
         metrics = await self._evaluator.evaluate(runner=runner, candidate=candidate)
-        logger.info(f"Оценка кандидата завершена, метрики: {metrics}")
+        logger.info(f"Оценка кандидата с идеей '{candidate.idea}' завершена, метрики: {metrics}")
         return metrics
 
     async def run_search(self) -> CandidateDatabase:
@@ -101,40 +101,72 @@ class LLMBasedArchitectureSearch:
         CandidateDatabase
             База данных с результатами всех оценённых кандидатов.
         """
-        logger.info(f"Старт поиска архитектур, планируется оценить {self._max_candidates} кандидатов.")
-
-        initial_candidate = await self._sampler.create_initial_candidate()
-        first_metrics = await self._evaluate_single_candidate(candidate=initial_candidate)
-        self._database.add_result(
-                candidate=initial_candidate,
-                metrics=first_metrics,
-                backend_name=self._backend_name,
+        logger.info(
+                f"Старт поиска архитектур, планируется оценить {self._max_candidates} кандидатов."
         )
-        logger.info("Первый кандидат успешно добавлен в базу результатов.")
 
         while len(self._database) < self._max_candidates:
             logger.info(
-                    f"Поиск продолжится, текущий прогресс: {len(self._database)} / {self._max_candidates} кандидатов."
+                    f"Поиск кандидатов: текущий прогресс {len(self._database)} / "
+                    f"{self._max_candidates} успешных кандидатов."
             )
-            parent_a, parent_b = self._sampler.select_parents_for_crossover(
-                    database=self._database,
-                    metric_name=self._metric_name,
-                    top_k=self._top_k_for_crossover,
-            )
-            logger.info(
-                    f"Выбраны родители для скрещивания: {parent_a.candidate_id} и {parent_b.candidate_id}."
-            )
-            child_candidate = await self._sampler.crossover_candidates(
-                    parent_a=parent_a,
-                    parent_b=parent_b,
-            )
-            child_metrics = await self._evaluate_single_candidate(candidate=child_candidate)
-            self._database.add_result(
-                    candidate=child_candidate,
-                    metrics=child_metrics,
+
+            try:
+                if len(self._database) < 2:
+                    logger.info("Генерация нового кандидата без скрещивания.")
+                    candidate = await self._sampler.create_initial_candidate()
+                else:
+                    parent_a, parent_b = self._sampler.select_parents_for_crossover(
+                            database=self._database,
+                            metric_name=self._metric_name,
+                            top_k=self._top_k_for_crossover,
+                    )
+                    logger.info(
+                            f"Выбраны родители для скрещивания: {parent_a.candidate_id} "
+                            f"и {parent_b.candidate_id}."
+                    )
+                    candidate = await self._sampler.crossover_candidates(
+                            parent_a=parent_a,
+                            parent_b=parent_b,
+                    )
+                    logger.info(
+                            f"Сгенерирован новый кандидат после скрещивания, идея: {candidate.idea}"
+                    )
+            except Exception as exc:
+                error_message = (
+                    f"Генерация кандидата завершилась ошибкой: {type(exc).__name__}: {exc}"
+                )
+                logger.exception(
+                        f"Ошибка генерации кандидата: {error_message}"
+                )
+                self._sampler.register_failed_candidate(error_message)
+                continue
+
+            try:
+                metrics = await self._evaluate_single_candidate(candidate=candidate)
+            except Exception as exc:
+                error_message = (
+                    f"Оценка кандидата завершилась ошибкой: {type(exc).__name__}: {exc}"
+                )
+                logger.exception(
+                        f"Ошибка оценки кандидата с идеей '{candidate.idea}': {error_message}"
+                )
+                self._sampler.register_failed_candidate(error_message)
+                continue
+
+            self._sampler.clear_failure_history()
+            record = self._database.add_result(
+                    candidate=candidate,
+                    metrics=metrics,
                     backend_name=self._backend_name,
             )
-            logger.info("Новый кандидат после скрещивания добавлен в базу результатов.")
+            logger.info(
+                    f"Кандидат с идеей '{candidate.idea}' сохранён в базе под идентификатором "
+                    f"{record.candidate_id} с метриками {metrics}."
+            )
 
-        logger.info("Поиск архитектур завершён.")
+        logger.info(
+                f"Поиск архитектур завершён: успешно оценено {len(self._database)} кандидатов "
+                f"из запланированных {self._max_candidates}."
+        )
         return self._database

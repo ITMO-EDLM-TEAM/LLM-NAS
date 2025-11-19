@@ -33,6 +33,17 @@ Parent B files (paths and contents):
 {{ content }}
 {% endfor %}
 
+{% if previous_failure_message %}
+# Previous failed attempt
+
+The most recent child candidate failed during generation or execution with the following error message:
+
+{{ previous_failure_message }}
+
+When designing the new child pipeline, you must preserve the strengths of the parents while strictly following the
+required interfaces and avoiding the issues that led to this failure.
+{% endif %}
+
 # Requirements
 
 You must analyse the strengths and weaknesses of both parent solutions (architecture, data handling, training loop)

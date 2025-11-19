@@ -13,8 +13,7 @@ class CandidateSampler:
     """Класс, отвечающий за генерацию новых кандидатов с помощью LLM."""
 
     def __init__(self, llm_pipeline: LLMPipeline, problem: Problem):
-        """
-        Инициализирует сэмплер кандидатов.
+        """Инициализирует сэмплер кандидатов.
 
         Параметры
         ----------
@@ -25,20 +24,22 @@ class CandidateSampler:
         """
         self._llm_pipeline: Final[LLMPipeline] = llm_pipeline
         self._problem: Final[Problem] = problem
+        self._last_failure_message: str | None = None
 
     async def create_initial_candidate(self) -> Candidate:
-        """
-        Создаёт нового кандидата с нуля на основе постановки задачи.
+        """Создаёт нового кандидата с нуля на основе постановки задачи.
 
         Возвращает
         ----------
         Candidate
             Новый кандидат, сгенерированный из шаблона `new_candidate`.
         """
-        candidate = await Candidate.new_from_problem(
+        idea, files = await self._llm_pipeline.generate_files_from_template(
+                template_name="new_candidate",
                 problem=self._problem,
-                llm_pipeline=self._llm_pipeline,
+                previous_failure_message=self._last_failure_message,
         )
+        candidate = Candidate(files=files, idea=idea)
         return candidate
 
     async def crossover_candidates(
@@ -46,8 +47,7 @@ class CandidateSampler:
             parent_a: CandidateRecord,
             parent_b: CandidateRecord,
     ) -> Candidate:
-        """
-        Генерирует нового кандидата путём скрещивания двух родительских решений.
+        """Генерирует нового кандидата путём скрещивания двух родительских решений.
 
         Параметры
         ----------
@@ -70,6 +70,7 @@ class CandidateSampler:
                 parent_b_metrics=parent_b.metrics,
                 parent_a_files=parent_a.candidate.files,
                 parent_b_files=parent_b.candidate.files,
+                previous_failure_message=self._last_failure_message,
         )
         return Candidate(files=files, idea=idea)
 
@@ -79,8 +80,7 @@ class CandidateSampler:
             metric_name: str,
             top_k: int,
     ) -> tuple[CandidateRecord, CandidateRecord]:
-        """
-        Выбирает двух лучших родителей из базы для скрещивания по указанной метрике.
+        """Выбирает двух лучших родителей из базы для скрещивания по указанной метрике.
 
         Параметры
         ----------
@@ -111,3 +111,15 @@ class CandidateSampler:
         parent_a = best_candidates[0]
         parent_b = best_candidates[1]
         return parent_a, parent_b
+
+    def register_failed_candidate(self, error_message: str) -> None:
+        """Register information about a failed candidate generation or execution.
+
+        The message is later forwarded to the LLM in prompts so that future
+        candidates can avoid repeating the same error.
+        """
+        self._last_failure_message = error_message
+
+    def clear_failure_history(self) -> None:
+        """Clear stored information about previous candidate failures."""
+        self._last_failure_message = None

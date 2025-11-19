@@ -6,6 +6,17 @@ Your task is to develop a complete pipeline for training a PyTorch model to solv
 {{ problem.statement }}
 -----
 
+{% if previous_failure_message %}
+# Previous failed attempt
+
+The previous candidate generated for this problem failed during execution with the following error message:
+
+{{ previous_failure_message }}
+
+You must design a new solution that strictly follows the required interfaces, file names, and output formats described
+below and avoids the issues that led to this failure.
+{% endif %}
+
 # Requirements
 
 You must provide three distinct files: a primary Python submission script and two corresponding JSON configuration
