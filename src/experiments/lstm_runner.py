@@ -22,6 +22,7 @@ def run_lstm_on_etth_dataset(
         dataset_name: str,
         model_name: str,
         artifacts_dir: str,
+        device: torch.device,
 ) -> ExperimentResult:
     """
     Запускает LSTM-модель на ETTh-датасете (ETTh1 или ETTh2) и возвращает результат эксперимента.
@@ -43,6 +44,8 @@ def run_lstm_on_etth_dataset(
         Имя модели (например, 'lstm-baseline').
     artifacts_dir : str
         Каталог, в который будут сохранены метрики и предсказания.
+    device : torch.device
+        Устройство, на котором будет выполняться обучение и инференс модели.
 
     Возвращает
     ----------
@@ -65,8 +68,6 @@ def run_lstm_on_etth_dataset(
             batch_size=hyperparams.batch_size,
             target_column='OT',
     )
-
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     mse = _train_one_model(
             train_loader=train_loader,

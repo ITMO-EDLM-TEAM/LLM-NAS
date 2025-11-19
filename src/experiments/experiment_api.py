@@ -11,6 +11,7 @@ import optuna
 import pandas as pd
 import psutil
 import torch
+from edlm_search.devices import get_torch_device
 from zeus.monitor import ZeusMonitor
 
 from .datasets import load_ett_csv_dataset
@@ -30,6 +31,7 @@ def _run_lstm_with_resource_monitoring(
         dataset_name: str,
         model_name: str,
         artifacts_dir: str,
+        device: torch.device,
 ) -> ExperimentResult:
     """
     Run LSTM experiment with resource monitoring and unified artifact saving.
@@ -38,6 +40,23 @@ def _run_lstm_with_resource_monitoring(
       * measures wall time, CPU time, RSS and GPU energy;
       * calls run_lstm_on_etth_dataset to train and save artifacts;
       * enriches metrics and extra_info with resource statistics.
+
+    Parameters
+    ----------
+    train_df : pandas.DataFrame
+        Training dataset.
+    valid_df : pandas.DataFrame
+        Validation dataset.
+    hyperparams : LSTMHyperParams
+        Hyperparameters for LSTM training.
+    dataset_name : str
+        Dataset name.
+    model_name : str
+        Model name used in reports and artifact filenames.
+    artifacts_dir : str
+        Directory for saving artifacts.
+    device : torch.device
+        Device used for model training and evaluation.
     """
     process = psutil.Process()
     cpu_times_before = process.cpu_times()
@@ -46,7 +65,7 @@ def _run_lstm_with_resource_monitoring(
 
     monitor = None
     gpu_total_energy_joules = 0.0
-    if torch.cuda.is_available():
+    if device.type == 'cuda' and torch.cuda.is_available():
         try:
             current_device = torch.cuda.current_device()
             monitor = ZeusMonitor(gpu_indices=[current_device])
@@ -65,6 +84,7 @@ def _run_lstm_with_resource_monitoring(
             dataset_name=dataset_name_final,
             model_name=model_name,
             artifacts_dir=artifacts_dir,
+            device=device,
     )
 
     if monitor is not None:
@@ -284,6 +304,7 @@ def run_lstm_etth_experiment(
         num_epochs: int,
         model_name: str,
         artifacts_dir: str,
+        device_type: str = 'auto',
 ) -> ExperimentResult:
     """
     Высокоуровневая функция запуска эксперимента с LSTM на ETTh-датасетах (ETTh1, ETTh2).
@@ -326,6 +347,11 @@ def run_lstm_etth_experiment(
         Количество эпох обучения.
     model_name : str
         Имя модели в отчёте результата.
+    artifacts_dir : str
+        Каталог, в который будут сохранены артефакты.
+    device_type : str, optional
+        Тип вычислительного устройства: "auto", "cpu", "cuda" или "mps".
+        При значении "auto" выбирается CUDA, затем MPS, иначе CPU.
 
     Возвращает
     ----------
@@ -335,6 +361,9 @@ def run_lstm_etth_experiment(
     _logger.info(
             f'Запуск LSTM-эксперимента для датасета "{dataset_name}" с CSV по пути "{csv_path}".'
     )
+
+    device = get_torch_device(device_type=device_type)
+    _logger.info(f'Для LSTM-эксперимента будет использовано устройство "{device.type}".')
 
     train_df, valid_df = load_ett_csv_dataset(
             csv_path=csv_path,
@@ -359,6 +388,7 @@ def run_lstm_etth_experiment(
             dataset_name=dataset_name,
             model_name=model_name,
             artifacts_dir=artifacts_dir,
+            device=device,
     )
     return result
 
@@ -375,6 +405,7 @@ def run_lstm_optuna_etth_experiment(
         target_column: str,
         model_name: str,
         artifacts_dir: str,
+        device_type: str = 'auto',
 ) -> ExperimentResult:
     """
     Запускает поиск гиперпараметров LSTM с помощью Optuna и обучает лучшую модель.
@@ -406,6 +437,9 @@ def run_lstm_optuna_etth_experiment(
         Имя модели.
     artifacts_dir : str
         Каталог для сохранения артефактов лучшей модели.
+    device_type : str, optional
+        Тип вычислительного устройства: "auto", "cpu", "cuda" или "mps".
+        При значении "auto" выбирается CUDA, затем MPS, иначе CPU.
 
     Возвращает
     ----------
@@ -417,6 +451,11 @@ def run_lstm_optuna_etth_experiment(
 
     _logger.info(
             f'Запуск LSTM+Optuna для датасета "{dataset_name}" с {n_trials} испытаниями.'
+    )
+
+    device = get_torch_device(device_type=device_type)
+    _logger.info(
+            f'Для LSTM+Optuna-эксперимента будет использовано устройство "{device.type}".'
     )
 
     train_df, valid_df = load_ett_csv_dataset(
@@ -433,6 +472,7 @@ def run_lstm_optuna_etth_experiment(
             num_epochs=num_epochs,
             n_trials=n_trials,
             target_column=target_column,
+            device_type=device_type,
     )
 
     best_trial = study.best_trial
@@ -458,6 +498,7 @@ def run_lstm_optuna_etth_experiment(
             dataset_name=dataset_name,
             model_name=model_name,
             artifacts_dir=artifacts_dir,
+            device=device,
     )
 
     extra_info = dict(base_result.extra_info)

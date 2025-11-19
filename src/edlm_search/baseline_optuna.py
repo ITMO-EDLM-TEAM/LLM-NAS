@@ -14,6 +14,8 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
+from .devices import get_torch_device
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -315,7 +317,7 @@ def _train_one_model(
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
     gpu_monitor = None
-    if ZeusMonitor is not None and torch.cuda.is_available():
+    if ZeusMonitor is not None and device.type == 'cuda' and torch.cuda.is_available():
         try:
             current_device_index = torch.cuda.current_device()
             gpu_monitor = ZeusMonitor(gpu_indices=[current_device_index])
@@ -326,7 +328,7 @@ def _train_one_model(
             )
             gpu_monitor = None
 
-    if torch.cuda.is_available():
+    if device.type == 'cuda' and torch.cuda.is_available():
         torch.cuda.reset_peak_memory_stats(device=device)
 
     train_start = time.perf_counter()
@@ -370,7 +372,7 @@ def _train_one_model(
     mse = float(np.mean((y_true - y_pred) ** 2))
 
     peak_gpu_memory_mb = 0.0
-    if torch.cuda.is_available():
+    if device.type == 'cuda' and torch.cuda.is_available():
         try:
             peak_bytes = torch.cuda.max_memory_allocated(device=device)
             peak_gpu_memory_mb = float(peak_bytes) / (1024.0 * 1024.0)
@@ -409,6 +411,7 @@ def run_optuna_for_etth(
         num_epochs: int,
         n_trials: int,
         target_column: str,
+        device_type: str = 'auto',
 ) -> optuna.Study:
     """
     Запускает оптимизацию гиперпараметров LSTM-модели для ETTh-датасетов с помощью Optuna.
@@ -429,6 +432,10 @@ def run_optuna_for_etth(
         Число испытаний Optuna.
     target_column : str
         Имя колонки целевой переменной (например, 'OT').
+    device_type : str, optional
+        Тип вычислительного устройства: "auto", "cpu", "cuda" или "mps".
+        По умолчанию используется "auto", который выбирает CUDA, затем MPS,
+        а при отсутствии поддерживаемых ускорителей — CPU.
 
     Возвращает
     ----------
@@ -438,7 +445,8 @@ def run_optuna_for_etth(
     if n_trials < 1:
         raise ValueError("Параметр n_trials должен быть не меньше 1.")
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = get_torch_device(device_type=device_type)
+    logger.info(f'Optuna LSTM search will use device "{device.type}".')
 
     def objective(trial: optuna.Trial) -> float:
         """
