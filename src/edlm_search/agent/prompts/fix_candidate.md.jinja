@@ -1,0 +1,98 @@
+Your task is to repair and improve an existing PyTorch forecasting pipeline that failed during execution.
+
+The pipeline solves a long sequence time-series forecasting problem on an ETT-format dataset. You must keep the required
+interfaces and file names exactly as specified and fix the issues that led to the failure while preserving the overall
+idea of the previous solution.
+
+# Problem
+
+-----
+{{ problem.statement }}
+-----
+
+# Previous candidate
+
+Previous idea:
+{{ previous_candidate_idea }}
+
+Previous files (paths and contents):
+{% for path, content in previous_candidate_files.items() %}
+[{{ path }}]
+{{ content }}
+{% endfor %}
+
+# Execution error
+
+The candidate above failed during execution with the following error message:
+
+{{ error_message }}
+
+You must carefully read this message, identify the root cause, and modify the pipeline accordingly so that it can be
+executed successfully in the same evaluation environment.
+
+# Requirements
+
+You must still target the following PyTorch device backend in `main.py`:
+
+* Backend name: `{{ torch_backend_name }}`
+
+All tensors, models and data that participate in training or inference must be created on
+`torch.device("{{ torch_backend_name }}")`. Do not perform any runtime device auto-detection in the generated code;
+assume that this backend is available.
+
+You must keep the required interfaces, file names, and overall structure:
+
+* **`main.py`**: A single Python script containing all the necessary code for the data handling, model definition, and
+  training logic. It must include:
+    * A `torch.utils.data.Dataset` class designed to preprocess the data into a format suitable for your model.
+    * A `torch.nn.Module` class that defines your model's architecture. This class must have a
+      `.from_config(cls, config)` class method to properly configure and instantiate it from a dictionary.
+    * A `Trainer` class to encapsulate the training loop, optimization, and management of the model's current weights.
+      This class must have the following methods:
+        * A `.from_config(cls, num_epochs, config, model, dataset)` class method for its configuration and
+          instantiation.
+        * A `.predict(self, df)` method that takes input rows in the same format the `Dataset` consumes and returns
+          predicted labels, reverse-transformed into their original format.
+        * A `.train(self)` method that is a generator. This method must only perform the training loop. It must `yield`
+          prediction labels on the validation dataset at the end of each training epoch.
+    * A `main(train_data_path, valid_data_path, num_epochs)` function. This is the script's entry point.
+        * It should read the training and validation data from the provided Parquet file paths.
+        * It must be a generator function that `yield`s the predictions for the validation set at the end of each epoch.
+        * All configuration files are guaranteed to be present at runtime.
+    * No `if __name__ == "__main__"` block is required.
+
+* **`model_config.json`**: A JSON file containing the configuration for your model's architecture (e.g., layer sizes,
+  dropout rates, embedding dimensions).
+
+* **`training_args.json`**: A JSON file containing the hyperparameters and settings for the trainer (e.g., learning
+  rate, batch size). The number of epochs is configured externally and will have no effect if defined here.
+
+When fixing the code, you must:
+
+* Preserve the main idea of the previous pipeline whenever possible.
+* Fix all interface mismatches and any issues that could lead to runtime errors or shape mismatches.
+* Ensure that `Trainer.train()` and `main()` correctly yield validation predictions at the end of each epoch.
+* Ensure that the code is robust against common data issues (NaNs, indexing mistakes, device mismatches) relevant to the
+  ETT setting.
+
+You must also provide a new, updated idea sentence that reflects the repaired solution.
+
+# Output format
+
+You must follow this exact XML-like structure:
+
+<idea> ... </idea>
+<files>
+    <file path="main.py">
+        ...
+    </file>
+    <file path="model_config.json">
+        ...
+    </file>
+    <file path="training_args.json">
+        ...
+    </file>
+</files>
+
+Do NOT use markdown code fences.
+Do NOT use <![CDATA[ ... ]]>.

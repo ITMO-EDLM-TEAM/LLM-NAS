@@ -17,47 +17,159 @@ You must design a new solution that strictly follows the required interfaces, fi
 below and avoids the issues that led to this failure.
 {% endif %}
 
-# Requirements
+# Dataset format and constraints
 
-You must target the following PyTorch device backend when writing your code in `main.py`:
+You will not see the raw CSV files directly. Instead, you will receive two Pandas DataFrames:
+
+* `train_df` — the training split;
+* `valid_df` — the validation split.
+
+At runtime, they are saved into Parquet files and passed to your `main(train_data_path, valid_data_path, num_epochs)`
+function as file paths.
+
+Both DataFrames are guaranteed to have the same schema and to follow the ETT-small-h style format used for ETTh1/ETTh2:
+
+* Columns (in some order):
+  `date, HUFL, HULL, MUFL, MULL, LUFL, LULL, OT`
+* `date` — timestamp column;
+* `OT` — the target that must be predicted;
+* all other columns (`HUFL`, `HULL`, `MUFL`, `MULL`, `LUFL`, `LULL`) are numeric features.
+
+Important constraints:
+
+* You must not hardcode any specific dataset name such as `ETTh1` or `ETTh2`.
+  Your code must work for any ETT-small-h style dataset with the column structure described above.
+* You must not assume a fixed number of rows, a fixed sequence length, or any particular time window.
+* The validation DataFrame may have arbitrary length.
+  At the end of each epoch you must produce one prediction per row of `valid_df`, in the original order.
+* The evaluation code will compare your predictions with `valid_df['OT']` using mean squared error (MSE).
+* Predictions must be finite numeric values (no NaN, no infinities). If you need to handle NaNs in inputs, you must do
+  it inside your pipeline (for example, by simple imputation), not by returning NaNs.
+
+# Runtime environment
+
+At runtime you can rely only on:
+
+* Python standard library;
+* `numpy`;
+* `pandas`;
+* `torch` (PyTorch).
+
+You must not import or rely on any other external libraries.
+
+The training and inference must run fully on the following PyTorch device backend:
 
 * Backend name: `{{ torch_backend_name }}`
 
 All tensors, models and data that participate in training or inference must be created on
-`torch.device("{{ torch_backend_name }}")`. Do not perform any runtime device auto-detection in the generated code;
-assume that this backend is available.
+`torch.device("{{ torch_backend_name }}")`. You must not perform any runtime device auto-detection in the generated
+code; assume that this backend is available and use it consistently.
+
+# Required files and interfaces
 
 You must provide three distinct files: a primary Python submission script and two corresponding JSON configuration
 files.
 
-* **`main.py`**: A single Python script containing all the necessary code for the data handling, model definition, and
-  training logic. This script must not contain any other code. It must include:
-    * A `torch.utils.data.Dataset` class designed to preprocess the data into a format suitable for your model.
-    * A `torch.nn.Module` class that defines your model's architecture. This class must have a
-      `.from_config(cls, config)` class method to properly configure and instantiate it from a dictionary.
-    * A `Trainer` class to encapsulate the training loop, optimization, and management of the model's current weights.
-      This class must have the following methods:
-        * A `.from_config(cls, num_epochs, config, model, dataset)` class method for its configuration and
-          instantiation.
-        * A `.predict(self, df)` method that takes input rows in the same format the `Dataset` consumes and returns
-          predicted labels, reverse-transformed into their original format.
-        * A `.train(self)` method that is a generator. This method must only perform the training loop. It must `yield`
-          prediction labels on the validation dataset at the end of each training epoch.
-    * A `main(train_data_path, valid_data_path, num_epochs)` function. This is the script's entry point.
-        * It should read the training and validation data from the provided Parquet file paths.
-        * It must be a generator function that `yield`s the predictions for the validation set at the end of each epoch.
-        * All configuration files are guaranteed to be present at runtime.
-    * No other section, like `if __name__ == "__main__"`, is required.
+## 1. `main.py`
 
-* **`model_config.json`**: A JSON file containing the configuration for your model's architecture (e.g., layer sizes,
-  dropout rates, embedding dimensions).
+A single Python script containing all the necessary code for the data handling, model definition, and training logic.
+This script must not contain any other code outside of what is required below. It must include:
 
-* **`training_args.json`**: A JSON file containing the hyperparameters and settings for the trainer (e.g., learning
-  rate, batch size). The number of epochs is configured externally and will have no effect if defined here.
+1. A `torch.utils.data.Dataset` class designed to preprocess the data into a format suitable for your model.
+
+    * It must accept a Pandas DataFrame with the ETT-small-h schema described above.
+    * It must construct input tensors and target tensors on the correct device.
+    * It must not assume a fixed number of rows.
+    * It must support both training and validation use cases.
+
+2. A `torch.nn.Module` class that defines your model's architecture. This class must have a
+   `.from_config(cls, config)` class method to properly configure and instantiate it from a dictionary.
+
+    * `config` is loaded from `model_config.json`.
+    * The method must perform basic validation of the config fields and create all submodules accordingly.
+    * The forward pass must accept batches produced by your Dataset and return predictions that can be mapped back to
+      the `OT` target.
+
+3. A `Trainer` class to encapsulate the training loop, optimization, and management of the model's current weights.
+
+   This class must have the following methods:
+
+    * `.from_config(cls, num_epochs, config, model, dataset)` class method:
+        * `config` is loaded from `training_args.json`;
+        * `num_epochs` is passed from the outer code and overrides any notion of epochs inside `config`;
+        * it must construct optimizers, learning-rate schedulers and any additional state on the correct device.
+
+    * `.predict(self, df)` method:
+        * takes a Pandas DataFrame with the same schema as `train_df` / `valid_df`;
+        * performs all necessary preprocessing and forward passes;
+        * returns predictions for `OT` as a **1D NumPy array or list of floats** of length `len(df)`;
+        * predictions must be reverse-transformed into their original numeric scale.
+
+    * `.train(self)` method:
+        * is a generator that performs the training loop for exactly `num_epochs` epochs;
+        * at the end of each epoch it must:
+            * evaluate the current model on the full validation DataFrame;
+            * obtain predictions for `valid_df` exactly in its original row order;
+            * yield the predictions as a sequence that can be converted to a 1D array of length `len(valid_df)`.
+
+   The training loop must not perform any early stopping based on unknown external signals; it must always run for
+   the configured `num_epochs`.
+
+4. A `main(train_data_path, valid_data_path, num_epochs)` function. This is the script's entry point.
+
+    * It must accept three positional arguments in this exact order.
+    * It must:
+        * read the training and validation data from the provided Parquet file paths;
+        * build the Dataset, the model and the Trainer using `model_config.json` and `training_args.json`;
+        * run the training loop for `num_epochs` epochs;
+        * at the end of each epoch, yield the predictions for the entire validation set.
+    * It must be implemented as a generator function that yields exactly the same objects as `Trainer.train()` yields.
+    * All configuration files are guaranteed to be present at runtime.
+    * You must not add a `if __name__ == "__main__":` block.
+
+## 2. `model_config.json`
+
+A JSON file containing the configuration for your model's architecture (e.g., layer sizes, dropout rates, embedding
+dimensions). The content of this file must be a valid JSON object. Typical fields include:
+
+* input dimensionality;
+* hidden sizes;
+* number of layers;
+* dropout probabilities;
+* any other structural hyperparameters that affect the model architecture.
+
+This file must not contain training hyperparameters such as learning rate or batch size.
+
+## 3. `training_args.json`
+
+A JSON file containing the hyperparameters and settings for the trainer (e.g., learning rate, batch size).
+The number of epochs is configured externally and must not affect the outer training loop even if present in this file.
+
+Typical fields:
+
+* learning rate;
+* batch size;
+* weight decay;
+* gradient clipping thresholds;
+* any additional training-specific settings.
 
 In addition to these files, you must also provide the main idea of your solution in a single sentence.
 
-When creating your submission, you must follow this exact structure:
+# Numerical stability and error handling
+
+Your code must:
+
+* validate the basic shapes and dtypes of tensors before passing them through the model;
+* ensure that loss values are finite (no NaN / inf) by handling edge cases in the data preprocessing;
+* avoid failing on common ETT-small-h quirks such as spikes, trends or seasonal patterns;
+* avoid any I/O beyond reading the provided Parquet files and the JSON configs.
+
+If a particular row in the input contains NaNs in feature columns, you must handle them deterministically inside your
+preprocessing (for example, with simple filling strategies) instead of propagating NaNs into the model output.
+
+# Output format
+
+You must follow this exact XML-like structure:
 
 <idea> ... </idea>
 <files>
@@ -73,5 +185,6 @@ When creating your submission, you must follow this exact structure:
 </files>
 
 You are forbidden from:
+
 - Using markdown code blocks inside the XML
 - Using <![CDATA[ ... ]]> to wrap code
