@@ -1,4 +1,3 @@
-# edlm_search/src/edlm_search/runner.py
 import asyncio
 import base64
 import contextlib
@@ -12,6 +11,7 @@ import tempfile
 from argparse import ArgumentParser
 from datetime import datetime
 from pathlib import Path
+from typing import Final
 from typing import Protocol
 
 import pandas as pd
@@ -22,6 +22,8 @@ from zeus.monitor import ZeusMonitor
 from .candidate import Candidate
 
 logger = logging.getLogger(__name__)
+
+_STDOUT_STREAM_LIMIT: Final[int] = 2 ** 20
 
 
 class Runner(Protocol):
@@ -116,6 +118,7 @@ class UnsafeRunner:
                         stderr=asyncio.subprocess.STDOUT,
                         env=child_env,
                         pass_fds=[comm_w],
+                        limit=_STDOUT_STREAM_LIMIT,
                 )
                 os.close(comm_w)
 
@@ -125,7 +128,7 @@ class UnsafeRunner:
                         lambda: asyncio.StreamReaderProtocol(comm_pipe_reader), os.fdopen(comm_r)
                 )
 
-                tasks = {
+                tasks: dict[asyncio.Task, str] = {
                     asyncio.create_task(self._process.stdout.readline()): 'stdout',
                     asyncio.create_task(comm_pipe_reader.readline()): 'comm',
                 }
@@ -137,7 +140,15 @@ class UnsafeRunner:
 
                     for future in done:
                         source = tasks.pop(future)
-                        line_bytes = future.result()
+                        try:
+                            line_bytes = future.result()
+                        except ValueError as exc:
+                            if source == 'stdout':
+                                logger.warning(
+                                        f'Failed to read candidate stdout line due to ValueError: {exc}'
+                                )
+                                continue
+                            raise
 
                         if not line_bytes:
                             continue

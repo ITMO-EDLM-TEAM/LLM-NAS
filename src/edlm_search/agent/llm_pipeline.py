@@ -96,6 +96,42 @@ class LLMPipeline:
         self._prompt_tokens_total = 0
         self._completion_tokens_total = 0
 
+    @staticmethod
+    def _strip_markdown_code_fence(content: str) -> str:
+        """
+        Remove outer Markdown code fences (```lang ... ```) if present.
+
+        The function searches for the first and the last line that start with
+        triple backticks and returns the text between them. If no such pair of
+        lines is found, the original content is returned unchanged.
+        """
+        if not content:
+            return content
+
+        lines = content.splitlines()
+        first_fence_index: int | None = None
+        last_fence_index: int | None = None
+
+        for index, line in enumerate(lines):
+            if line.lstrip().startswith('```'):
+                first_fence_index = index
+                break
+
+        if first_fence_index is None:
+            return content
+
+        for index in range(len(lines) - 1, -1, -1):
+            if lines[index].lstrip().startswith('```'):
+                last_fence_index = index
+                break
+
+        if last_fence_index is None or last_fence_index <= first_fence_index:
+            return content
+
+        inner_lines = lines[first_fence_index + 1:last_fence_index]
+        inner_text = '\n'.join(inner_lines)
+        return inner_text.strip('\n')
+
     def _parse_xml_files(self, xml_string: str) -> dict[str, str]:
         """
         Parses an XML-like string containing file data and returns a dictionary.
@@ -112,7 +148,7 @@ class LLMPipeline:
         -------
             A dictionary where keys are file paths and values are file contents.
         """
-        files_dict = {}
+        files_dict: dict[str, str] = {}
 
         pattern = re.compile(r'<file path="([^"]+)">(.+?)</file>', re.DOTALL)
         matches = list(pattern.finditer(xml_string))
@@ -129,7 +165,8 @@ class LLMPipeline:
             if not path:
                 raise ModelOutputParseError('found a file entry with no path')
 
-            cleaned_content = cleandoc(content)
+            without_fence = self._strip_markdown_code_fence(content)
+            cleaned_content = cleandoc(without_fence)
 
             if not cleaned_content.strip():
                 raise ModelOutputParseError(f"content of file entry for '{path}' is empty")
