@@ -19,6 +19,14 @@ below and avoids the issues that led to this failure.
 
 # Requirements
 
+You must target the following PyTorch device backend when writing your code in `main.py`:
+
+* Backend name: `{{ torch_backend_name }}`
+
+All tensors, models and data that participate in training or inference must be created on
+`torch.device("{{ torch_backend_name }}")`. Do not perform any runtime device auto-detection in the generated code;
+assume that this backend is available.
+
 You must provide three distinct files: a primary Python submission script and two corresponding JSON configuration
 files.
 

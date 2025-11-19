@@ -7,6 +7,7 @@ from .candidates_database import CandidateDatabase
 from .candidates_database import CandidateRecord
 from .llm_pipeline import LLMPipeline
 from .problem import Problem
+from ..devices import get_torch_device
 
 
 class CandidateSampler:
@@ -25,6 +26,19 @@ class CandidateSampler:
         self._llm_pipeline: Final[LLMPipeline] = llm_pipeline
         self._problem: Final[Problem] = problem
         self._last_failure_message: str | None = None
+        self._torch_backend_name: Final[str] = self._detect_torch_backend_name()
+
+    def _detect_torch_backend_name(self) -> str:
+        """
+        Detect PyTorch device backend name to be passed into LLM prompts.
+
+        Returns
+        -------
+        str
+            Device type string compatible with torch.device, for example "cpu", "cuda" or "mps".
+        """
+        device = get_torch_device('auto')
+        return device.type
 
     async def create_initial_candidate(self) -> Candidate:
         """Создаёт нового кандидата с нуля на основе постановки задачи.
@@ -38,6 +52,7 @@ class CandidateSampler:
                 template_name="new_candidate",
                 problem=self._problem,
                 previous_failure_message=self._last_failure_message,
+                torch_backend_name=self._torch_backend_name,
         )
         candidate = Candidate(files=files, idea=idea)
         return candidate
@@ -71,6 +86,7 @@ class CandidateSampler:
                 parent_a_files=parent_a.candidate.files,
                 parent_b_files=parent_b.candidate.files,
                 previous_failure_message=self._last_failure_message,
+                torch_backend_name=self._torch_backend_name,
         )
         return Candidate(files=files, idea=idea)
 
