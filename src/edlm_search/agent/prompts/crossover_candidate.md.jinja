@@ -1,0 +1,98 @@
+Your task is to take two existing solutions for the forecasting problem below and design a new, improved training
+pipeline.
+
+# Problem
+
+-----
+{{ problem.statement }}
+-----
+
+# Parent solutions
+
+Parent A idea:
+{{ parent_a_idea }}
+
+Parent A metrics (JSON):
+{{ parent_a_metrics }}
+
+Parent B idea:
+{{ parent_b_idea }}
+
+Parent B metrics (JSON):
+{{ parent_b_metrics }}
+
+Parent A files (paths and contents):
+{% for path, content in parent_a_files.items() %}
+[{{ path }}]
+{{ content }}
+{% endfor %}
+
+Parent B files (paths and contents):
+{% for path, content in parent_b_files.items() %}
+[{{ path }}]
+{{ content }}
+{% endfor %}
+
+{% if previous_failure_message %}
+# Previous failed attempt
+
+The most recent child candidate failed during generation or execution with the following error message:
+
+{{ previous_failure_message }}
+
+When designing the new child pipeline, you must preserve the strengths of the parents while strictly following the
+required interfaces and avoiding the issues that led to this failure.
+{% endif %}
+
+# Requirements
+
+You must target the following PyTorch device backend when writing your code in `main.py`:
+
+* Backend name: `{{ torch_backend_name }}`
+
+All tensors, models and data that participate in training or inference must be created on
+`torch.device("{{ torch_backend_name }}")`. Do not perform any runtime device auto-detection in the generated code;
+assume that this backend is available.
+
+You must analyse the strengths and weaknesses of both parent solutions (architecture, data handling, training loop)
+and design a new pipeline that is likely to achieve better MSE and faster convergence.
+
+You must output three files:
+
+* **`main.py`**: The training script, containing:
+    * A `torch.utils.data.Dataset` class for preprocessing.
+    * A `torch.nn.Module` model class with `.from_config(cls, config)` class method.
+    * A `Trainer` class with:
+        * `.from_config(cls, num_epochs, config, model, dataset)`
+        * `.predict(self, df)` returning reverse-transformed predictions.
+        * `.train(self)` — a generator yielding validation predictions at the end of each epoch.
+    * A `main(train_data_path, valid_data_path, num_epochs)` function that:
+        * Reads training and validation data from Parquet files.
+        * Yields validation predictions at the end of each epoch.
+
+* **`model_config.json`**: JSON with model architecture parameters.
+
+* **`training_args.json`**: JSON with trainer hyperparameters (learning rate, batch size, etc.).
+  The number of epochs is configured externally.
+
+You must keep the existing file naming and interface contract exactly as described.
+
+# Output format
+
+You must follow this exact XML-like structure:
+
+<idea> ... </idea>
+<files>
+    <file path="main.py">
+        ...
+    </file>
+    <file path="model_config.json">
+        ...
+    </file>
+    <file path="training_args.json">
+        ...
+    </file>
+</files>
+
+Do NOT use markdown code fences.
+Do NOT use <![CDATA[ ... ]]>.

@@ -1,29 +1,33 @@
-[project]
+[tool.poetry]
 name = "edlm-search"
 version = "0.1.0"
-description = "Add your description here"
+description = "LLM-based architecture search for time-series forecasting on ETT datasets"
 readme = "README.md"
-requires-python = ">=3.13"
-dependencies = [
-    "beautifulsoup4>=4.14.2",
-    "dotenv>=0.9.9",
-    "jinja2>=3.1.6",
-    "lxml>=6.0.2",
-    "numpy>=2.3.4",
-    "openai[aiohttp]>=2.5.0",
-    "pandas>=2.3.3",
-    "pyarrow>=22.0.0",
-    "scikit-learn>=1.7.2",
-    "torch>=2.9.0",
-    "zeus>=0.12.3",
-    "tblib>=3.0.0",
-]
+authors = ["Неронов Роман, Фазлыев Альберт"]
+packages = [{ include = "edlm_search", from = "src" }]
 
-[dependency-groups]
-dev = [
-    "basedpyright>=1.31.7",
-    "ruff>=0.14.0",
-]
+[tool.poetry.dependencies]
+python = ">=3.12,<3.15"
+beautifulsoup4 = ">=4.14.2"
+dotenv = ">=0.9.9"
+jinja2 = ">=3.1.6"
+lxml = ">=6.0.2"
+numpy = ">=2.3.4"
+openai = { version = ">=2.5.0", extras = ["aiohttp"] }
+pandas = ">=2.3.3"
+pyarrow = ">=22.0.0"
+scikit-learn = ">=1.7.2"
+torch = ">=2.9.0"
+zeus = ">=0.12.3"
+tblib = ">=3.0.0"
+optuna = ">=4.0.0"
+matplotlib = "^3.10.7"
+notebook = "^7.4.7"
+tiktoken = "^0.12.0"
+
+[tool.poetry.group.dev.dependencies]
+basedpyright = ">=1.31.7"
+ruff = ">=0.14.0"
 
 [tool.ruff]
 line-length = 96
@@ -33,44 +37,39 @@ quote-style = "single"
 
 [tool.ruff.lint]
 select = [
-    # See: https://docs.astral.sh/ruff/rules/
-    "E", # https://docs.astral.sh/ruff/rules/#error-e
-    "F", # https://docs.astral.sh/ruff/rules/#pyflakes-f
-    "UP", # https://docs.astral.sh/ruff/rules/#pyupgrade-up
-    "B", # https://docs.astral.sh/ruff/rules/#flake8-bugbear-b
-    "I", # https://docs.astral.sh/ruff/rules/#isort-i
-    "D", # https://docs.astral.sh/ruff/rules/#pydocstyle-d
-    "SIM", # https://docs.astral.sh/ruff/rules/#flake8-simplify-sim
-
+    "E",
+    "F",
+    "UP",
+    "B",
+    "I",
+    "D",
+    "SIM",
 ]
 ignore = [
-    # Disable some rules that are overly pedantic. Add/remove as desired:
-    "E501", # https://docs.astral.sh/ruff/rules/line-too-long/
-    "E402", # https://docs.astral.sh/ruff/rules/module-import-not-at-top-of-file/
-    "E731", # https://docs.astral.sh/ruff/rules/lambda-assignment/
-    "EM102", # https://docs.astral.sh/ruff/rules/f-string-in-exception/
-    # We use both ruff formatter and linter so some rules should always be disabled.
-    # See: https://docs.astral.sh/ruff/formatter/#conflicting-lint-rules
-    "W191", # https://docs.astral.sh/ruff/rules/tab-indentation/
-    "E111", # https://docs.astral.sh/ruff/rules/indentation-with-invalid-multiple/
-    "E114", # https://docs.astral.sh/ruff/rules/indentation-with-invalid-multiple-comment/
-    "E117", # https://docs.astral.sh/ruff/rules/over-indented/
-    "D100", # https://docs.astral.sh/ruff/rules/undocumented-public-module/
-    "D202", # https://docs.astral.sh/ruff/rules/blank-line-after-function/
-    "D203", # https://docs.astral.sh/ruff/rules/incorrect-blank-line-before-class/
-    "D204", # https://docs.astral.sh/ruff/rules/incorrect-blank-line-after-class/
-    "D206", # https://docs.astral.sh/ruff/rules/docstring-tab-indentation/
-    "D212", # https://docs.astral.sh/ruff/rules/multi-line-summary-second-line/
-    "D300", # https://docs.astral.sh/ruff/rules/triple-single-quotes/
-    "D400", # https://docs.astral.sh/ruff/rules/missing-trailing-period/
-    "D401", # https://docs.astral.sh/ruff/rules/non-imperative-mood/
-    "Q000", # https://docs.astral.sh/ruff/rules/bad-quotes-inline-string/
-    "Q001", # https://docs.astral.sh/ruff/rules/bad-quotes-multiline-string/
-    "Q002", # https://docs.astral.sh/ruff/rules/bad-quotes-docstring/
-    "Q003", # https://docs.astral.sh/ruff/rules/avoidable-escaped-quote/
-    "COM812", # https://docs.astral.sh/ruff/rules/missing-trailing-comma/
-    "COM819", # https://docs.astral.sh/ruff/rules/prohibited-trailing-comma/
-    "ISC002", # https://docs.astral.sh/ruff/rules/multi-line-implicit-string-concatenation/
+    "E501",
+    "E402",
+    "E731",
+    "EM102",
+    "W191",
+    "E111",
+    "E114",
+    "E117",
+    "D100",
+    "D202",
+    "D203",
+    "D204",
+    "D206",
+    "D212",
+    "D300",
+    "D400",
+    "D401",
+    "Q000",
+    "Q001",
+    "Q002",
+    "Q003",
+    "COM812",
+    "COM819",
+    "ISC002",
 ]
 
 [tool.ruff.lint.pydocstyle]
@@ -92,17 +91,5 @@ reportMissingParameterType = false
 reportUnannotatedClassAttribute = false
 
 [build-system]
-requires = ["hatchling", "uv-dynamic-versioning"]
-build-backend = "hatchling.build"
-
-[tool.hatch.version]
-source = "uv-dynamic-versioning"
-
-[tool.uv-dynamic-versioning]
-vcs = "git"
-style = "pep440"
-bump = true
-
-[tool.hatch.build.targets.wheel]
-packages = ["src/edlm_search"]
-
+requires = ["poetry-core>=1.9.0"]
+build-backend = "poetry.core.masonry.api"
