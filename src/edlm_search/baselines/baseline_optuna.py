@@ -14,7 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
-from .devices import get_torch_device
+from ..devices import get_torch_device
 
 logger = logging.getLogger(__name__)
 

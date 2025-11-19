@@ -1,5 +1,3 @@
-# edlm_search/src/edlm_search/ett_evaluator.py
-# edlm_search/ett_evaluator.py
 from __future__ import annotations
 
 import logging

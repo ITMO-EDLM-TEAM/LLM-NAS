@@ -8,12 +8,12 @@ from typing import Final
 import numpy as np
 import pandas as pd
 import torch
-from edlm_search.baseline_optuna import _train_one_model
-from edlm_search.baseline_optuna import create_dataloaders_for_etth
-from edlm_search.baseline_optuna import get_last_run_diagnostics
 
-from .types import ExperimentResult
-from .types import LSTMHyperParams
+from .baseline_optuna import _train_one_model
+from .baseline_optuna import create_dataloaders_for_etth
+from .baseline_optuna import get_last_run_diagnostics
+from ..experiments.types import ExperimentResult
+from ..experiments.types import LSTMHyperParams
 
 
 def run_lstm_on_etth_dataset(

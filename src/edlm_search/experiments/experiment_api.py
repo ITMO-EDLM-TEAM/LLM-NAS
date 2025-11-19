@@ -5,20 +5,20 @@ import time
 from pathlib import Path
 from typing import Final
 
-import edlm_search.baseline_optuna as baseline_optuna
 import optuna
 import pandas as pd
 import psutil
 import torch
-from edlm_search.devices import get_torch_device
 from zeus.monitor import ZeusMonitor
 
 from .datasets import load_ett_csv_dataset
-from .informer_runner import run_informer_external
-from .lstm_runner import run_lstm_on_etth_dataset
 from .types import ExperimentResult
 from .types import InformerRunnerConfig
 from .types import LSTMHyperParams
+from ..baselines import baseline_optuna
+from ..baselines.informer_runner import run_informer_external
+from ..baselines.lstm_runner import run_lstm_on_etth_dataset
+from ..devices import get_torch_device
 
 _logger = logging.getLogger(__name__)
 

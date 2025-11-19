@@ -7,8 +7,8 @@ import subprocess
 import sys
 from typing import Any
 
-from .types import ExperimentResult
-from .types import InformerRunnerConfig
+from ..experiments.types import ExperimentResult
+from ..experiments.types import InformerRunnerConfig
 
 
 def run_informer_external(
