@@ -1,4 +1,3 @@
-# edlm_search/src/experiments/experiment_api.py
 from __future__ import annotations
 
 import logging
@@ -307,7 +306,7 @@ def run_lstm_etth_experiment(
         device_type: str = 'auto',
 ) -> ExperimentResult:
     """
-    Высокоуровневая функция запуска эксперимента с LSTM на ETTh-датасетах (ETTh1, ETTh2).
+    Высокоуровневая функция запуска эксперимента с LSTM на ETT-датасетах (любой вариант бенчмарка ETT).
 
     Все параметры передаются явно и имеют значения по умолчанию, чтобы удобно вызывать
     функцию из ноутбука. Функция не привязана к конкретной структуре директорий и
@@ -324,7 +323,7 @@ def run_lstm_etth_experiment(
     Параметры
     ----------
     dataset_name : str
-        Имя датасета (например, 'ETTh1' или 'ETTh2').
+        Имя датасета (вариант семейства ETT).
     csv_path : str
         Полный путь к CSV-файлу с датасетом.
     max_rows : int
@@ -416,7 +415,7 @@ def run_lstm_optuna_etth_experiment(
     Параметры
     ----------
     dataset_name : str
-        Имя датасета (например, 'ETTh1').
+        Имя датасета (вариант семейства ETT).
     csv_path : str
         Путь к CSV-файлу датасета.
     max_rows : int
@@ -535,7 +534,7 @@ def run_informer_etth_experiment(
         model_name: str,
 ) -> ExperimentResult:
     """
-    Высокоуровневая функция запуска эксперимента с Informer на ETTh-датасетах (ETTh1, ETTh2)
+    Высокоуровневая функция запуска эксперимента с Informer на ETT-датасетах
     для использования в Jupyter.
 
     Для работы требуется внешний скрипт (например, informer_experiment_wrapper.py),
@@ -555,7 +554,7 @@ def run_informer_etth_experiment(
     Параметры
     ----------
     dataset_name : str
-        Имя датасета (например, 'ETTh1' или 'ETTh2').
+        Имя датасета (вариант семейства ETT).
     csv_path : str
         Полный путь к CSV-файлу с датасетом.
     max_rows : int
@@ -658,7 +657,7 @@ def run_informer_optuna_etth_experiment(
     Параметры
     ----------
     dataset_name : str
-        Имя датасета (например, 'ETTh1').
+        Имя датасета (вариант семейства ETT).
     csv_path : str
         Путь к CSV-файлу датасета.
     max_rows : int

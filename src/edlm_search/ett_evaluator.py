@@ -1,3 +1,4 @@
+# edlm_search/src/edlm_search/ett_evaluator.py
 # edlm_search/ett_evaluator.py
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-__all__ = ['ETTM1Evaluator']
+__all__ = ['ETTEvaluator']
 
 if TYPE_CHECKING:
     from .candidate import Candidate
@@ -16,9 +17,9 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 
-class ETTM1Evaluator:
+class ETTEvaluator:
     """
-    Evaluator for LLM-generated forecasting pipelines working with the ETTm1 dataset.
+    Evaluator for LLM-generated forecasting pipelines working with ETT-format datasets.
 
     The evaluator is responsible for executing a candidate inside the sandboxed runner,
     collecting the validation predictions produced at the end of each epoch, and

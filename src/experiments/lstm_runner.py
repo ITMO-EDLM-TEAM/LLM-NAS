@@ -1,3 +1,4 @@
+# edlm_search/src/experiments/lstm_runner.py
 from __future__ import annotations
 
 import json
@@ -25,7 +26,7 @@ def run_lstm_on_etth_dataset(
         device: torch.device,
 ) -> ExperimentResult:
     """
-    Запускает LSTM-модель на ETTh-датасете (ETTh1 или ETTh2) и возвращает результат эксперимента.
+    Запускает LSTM-модель на ETT-датасете и возвращает результат эксперимента.
 
     Помимо MSE, функция сохраняет дополнительные метрики (время, энергию, ресурсы) и
     предсказания на валидации в файлы внутри каталога artifacts_dir.
@@ -39,7 +40,7 @@ def run_lstm_on_etth_dataset(
     hyperparams : LSTMHyperParams
         Гиперпараметры LSTM-модели и обучения.
     dataset_name : str
-        Имя датасета (например, 'ETTh1' или 'ETTh2').
+        Имя датасета.
     model_name : str
         Имя модели (например, 'lstm-baseline').
     artifacts_dir : str

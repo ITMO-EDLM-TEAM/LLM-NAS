@@ -1,3 +1,4 @@
+# edlm_search/src/experiments/informer_runner.py
 from __future__ import annotations
 
 import json
@@ -33,7 +34,7 @@ def run_informer_external(
     config : InformerRunnerConfig
         Конфигурация запуска Informer: пути к скрипту, датасету и JSON с метриками.
     dataset_name : str
-        Имя датасета (например, 'ETTm1').
+        Имя датасета (например, вариант семейства ETT).
     model_name : str
         Имя модели (например, 'informer-original').
 

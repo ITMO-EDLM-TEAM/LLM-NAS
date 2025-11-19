@@ -1,5 +1,3 @@
-# edlm_search/src/Informer2020/informer_experiment_wrapper.py
-# edlm_search/Informer2020/informer_experiment_wrapper.py
 from __future__ import annotations
 
 import argparse
@@ -28,7 +26,7 @@ def _parse_args() -> argparse.Namespace:
     Разбирает аргументы командной строки для запуска Informer-эксперимента.
 
     Ожидаемые аргументы:
-      --data-path     путь к CSV-файлу ETT-датасета (ETTh1, ETTh2, ETTm1, ETTm2 и т.п.)
+      --data-path     путь к CSV-файлу ETT-датасета (любой вариант бенчмарка ETT)
       --metrics-path  путь к JSON-файлу с результатами
       --epochs        количество эпох обучения Informer
       все остальные аргументы пробрасываются далее в main_informer.py.
@@ -57,7 +55,7 @@ def _resolve_dataset_csv_path(data_path: str) -> Path:
     data_path : str
         Значение, переданное через --data-path. Может быть:
           * абсолютным или относительным путём к CSV-файлу;
-          * именем датасета без расширения (например, 'ETTh1').
+          * именем датасета без расширения (например, именем варианта ETT-бенчмарка).
 
     Возвращает
     ----------
@@ -212,8 +210,9 @@ def _run_informer_and_get_metrics(
     Параметры
     ----------
     data_path : str
-        Путь к CSV-файлу с датасетом (например, '/path/to/ETTh1.csv') или имя датасета
-        (например, 'ETTh1'), которое будет сопоставлено с типичным расположением ETT-данных.
+        Путь к CSV-файлу с датасетом (например, '/path/to/dataset.csv') или имя датасета
+        (например, имя варианта семейства ETT), которое будет сопоставлено с типичным
+        расположением ETT-данных.
     num_epochs : int
         Количество эпох обучения Informer.
     extra_args : list[str]

@@ -47,7 +47,7 @@ def get_last_run_diagnostics() -> dict[str, object]:
 
 
 class ETTSequenceDataset(Dataset):
-    """Dataset для последовательностного прогнозирования по ETT-датасетам (ETTh1, ETTh2 и т.п.)."""
+    """Dataset для последовательностного прогнозирования по семейству ETT-датасетов."""
 
     def __init__(
             self,
@@ -197,7 +197,7 @@ def create_dataloaders_for_etth(
         target_column: str,
 ) -> tuple[DataLoader, DataLoader, list[str]]:
     """
-    Создаёт DataLoader'ы для обучения и валидации на ETTh-датасетах (ETTh1, ETTh2).
+    Создаёт DataLoader'ы для обучения и валидации на ETT-датасетах произвольного варианта.
 
     Параметры
     ----------
@@ -414,7 +414,7 @@ def run_optuna_for_etth(
         device_type: str = 'auto',
 ) -> optuna.Study:
     """
-    Запускает оптимизацию гиперпараметров LSTM-модели для ETTh-датасетов с помощью Optuna.
+    Запускает оптимизацию гиперпараметров LSTM-модели для ETT-датасетов с помощью Optuna.
 
     Параметры
     ----------
