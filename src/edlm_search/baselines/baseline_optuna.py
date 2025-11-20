@@ -14,7 +14,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 
-from ..devices import get_torch_device
+from ..experiments.types import LSTMSearchSpace
 
 logger = logging.getLogger(__name__)
 
@@ -403,15 +403,60 @@ def _train_one_model(
     return mse
 
 
+def _validate_lstm_search_space(search_space: LSTMSearchSpace) -> None:
+    """
+    Validate LSTMSearchSpace instance before passing it to Optuna.
+    """
+    if not search_space.seq_len_values:
+        raise ValueError('LSTM search space "seq_len_values" must not be empty.')
+    for value in search_space.seq_len_values:
+        if value <= 0:
+            raise ValueError('All values in "seq_len_values" must be positive integers.')
+
+    if not search_space.pred_len_values:
+        raise ValueError('LSTM search space "pred_len_values" must not be empty.')
+    for value in search_space.pred_len_values:
+        if value <= 0:
+            raise ValueError('All values in "pred_len_values" must be positive integers.')
+
+    if not search_space.num_epochs_values:
+        raise ValueError('LSTM search space "num_epochs_values" must not be empty.')
+    for value in search_space.num_epochs_values:
+        if value <= 0:
+            raise ValueError('All values in "num_epochs_values" must be positive integers.')
+
+    if not search_space.hidden_size_values:
+        raise ValueError('LSTM search space "hidden_size_values" must not be empty.')
+    for value in search_space.hidden_size_values:
+        if value <= 0:
+            raise ValueError('All values in "hidden_size_values" must be positive integers.')
+
+    if not search_space.num_layers_values:
+        raise ValueError('LSTM search space "num_layers_values" must not be empty.')
+    for value in search_space.num_layers_values:
+        if value <= 0:
+            raise ValueError('All values in "num_layers_values" must be positive integers.')
+
+    if not search_space.learning_rate_values:
+        raise ValueError('LSTM search space "learning_rate_values" must not be empty.')
+    for value in search_space.learning_rate_values:
+        if value <= 0.0:
+            raise ValueError('All values in "learning_rate_values" must be positive.')
+
+    if not search_space.batch_size_values:
+        raise ValueError('LSTM search space "batch_size_values" must not be empty.')
+    for value in search_space.batch_size_values:
+        if value <= 0:
+            raise ValueError('All values in "batch_size_values" must be positive integers.')
+
+
 def run_optuna_for_etth(
         train_df: pd.DataFrame,
         valid_df: pd.DataFrame,
-        seq_len: int,
-        pred_len: int,
-        num_epochs: int,
+        search_space: LSTMSearchSpace,
         n_trials: int,
         target_column: str,
-        device_type: str = 'auto',
+        device: torch.device,
 ) -> optuna.Study:
     """
     Запускает оптимизацию гиперпараметров LSTM-модели для ETT-датасетов с помощью Optuna.
@@ -422,20 +467,14 @@ def run_optuna_for_etth(
         Обучающие данные.
     valid_df : pandas.DataFrame
         Валидационные данные.
-    seq_len : int
-        Длина входной последовательности.
-    pred_len : int
-        Длина прогноза.
-    num_epochs : int
-        Количество эпох обучения для каждой попытки.
+    search_space : LSTMSearchSpace
+        Search space for LSTM hyperparameters.
     n_trials : int
         Число испытаний Optuna.
     target_column : str
         Имя колонки целевой переменной (например, 'OT').
-    device_type : str, optional
-        Тип вычислительного устройства: "auto", "cpu", "cuda" или "mps".
-        По умолчанию используется "auto", который выбирает CUDA, затем MPS,
-        а при отсутствии поддерживаемых ускорителей — CPU.
+    device : torch.device
+        Устройство, используемое для обучения и оценки модели.
 
     Возвращает
     ----------
@@ -445,8 +484,21 @@ def run_optuna_for_etth(
     if n_trials < 1:
         raise ValueError("Параметр n_trials должен быть не меньше 1.")
 
-    device = get_torch_device(device_type=device_type)
-    logger.info(f'Optuna LSTM search will use device "{device.type}".')
+    _validate_lstm_search_space(search_space)
+
+    logger.info(
+            f'Optuna LSTM search will use device "{device.type}" '
+            f'and {n_trials} trials.'
+    )
+    logger.info(
+            f'LSTM search space: seq_len={search_space.seq_len_values}, '
+            f'pred_len={search_space.pred_len_values}, '
+            f'num_epochs={search_space.num_epochs_values}, '
+            f'hidden_size={search_space.hidden_size_values}, '
+            f'num_layers={search_space.num_layers_values}, '
+            f'learning_rate={search_space.learning_rate_values}, '
+            f'batch_size={search_space.batch_size_values}.'
+    )
 
     def objective(trial: optuna.Trial) -> float:
         """
@@ -462,10 +514,23 @@ def run_optuna_for_etth(
         float
             Значение функции потерь (MSE) на валидации.
         """
-        hidden_size = trial.suggest_int("hidden_size", 32, 256)
-        num_layers = trial.suggest_int("num_layers", 1, 3)
-        learning_rate = trial.suggest_float("learning_rate", 1e-4, 1e-2, log=True)
-        batch_size = trial.suggest_categorical("batch_size", [32, 64, 128])
+        seq_len = int(trial.suggest_categorical("seq_len", search_space.seq_len_values))
+        pred_len = int(trial.suggest_categorical("pred_len", search_space.pred_len_values))
+        num_epochs = int(
+                trial.suggest_categorical("num_epochs", search_space.num_epochs_values)
+        )
+        hidden_size = int(
+                trial.suggest_categorical("hidden_size", search_space.hidden_size_values)
+        )
+        num_layers = int(
+                trial.suggest_categorical("num_layers", search_space.num_layers_values)
+        )
+        learning_rate = float(
+                trial.suggest_categorical("learning_rate", search_space.learning_rate_values)
+        )
+        batch_size = int(
+                trial.suggest_categorical("batch_size", search_space.batch_size_values)
+        )
 
         train_loader, valid_loader, feature_columns = create_dataloaders_for_etth(
                 train_df=train_df,
