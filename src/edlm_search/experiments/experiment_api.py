@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from pathlib import Path
+from typing import Callable
 from typing import Final
+from typing import TypeVar
 
 import optuna
 import pandas as pd
@@ -14,13 +18,303 @@ from zeus.monitor import ZeusMonitor
 from .datasets import load_ett_csv_dataset
 from .types import ExperimentResult
 from .types import InformerRunnerConfig
+from .types import InformerSearchSpace
 from .types import LSTMHyperParams
+from .types import LSTMSearchSpace
 from ..baselines import baseline_optuna
 from ..baselines.informer_runner import run_informer_external
 from ..baselines.lstm_runner import run_lstm_on_etth_dataset
 from ..devices import get_torch_device
 
 _logger = logging.getLogger(__name__)
+
+T = TypeVar('T')
+
+
+def _load_json_config_from_env(env_name: str) -> dict[str, object]:
+    """
+    Load JSON object from environment variable.
+
+    The variable must be set, non-empty and contain a JSON object.
+    """
+    raw = os.getenv(env_name)
+    if raw is None:
+        raise ValueError(f'Environment variable "{env_name}" must be set.')
+    raw_stripped = raw.strip()
+    if not raw_stripped:
+        raise ValueError(f'Environment variable "{env_name}" must not be empty.')
+    try:
+        parsed = json.loads(raw_stripped)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+                f'Environment variable "{env_name}" must contain valid JSON.'
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(
+                f'Environment variable "{env_name}" must contain a JSON object.'
+        )
+    return parsed
+
+
+def _extract_typed_list(
+        config: dict[str, object],
+        key: str,
+        cast: Callable[[object], T],
+        must_be_positive: bool,
+        config_name: str,
+) -> list[T]:
+    """
+    Extract and validate typed list from JSON config.
+
+    The key must be present and map to a non-empty list.
+    """
+    if key not in config:
+        raise ValueError(
+                f'Key "{key}" is missing in {config_name}.'
+        )
+
+    value = config[key]
+    if not isinstance(value, list):
+        raise ValueError(
+                f'Value for key "{key}" in {config_name} must be a list.'
+        )
+    if not value:
+        raise ValueError(
+                f'List for key "{key}" in {config_name} must not be empty.'
+        )
+
+    result: list[T] = []
+    for item in value:
+        try:
+            converted = cast(item)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                    f'Value "{item}" in list for key "{key}" in {config_name} cannot be converted.'
+            ) from exc
+        if must_be_positive and converted <= 0:  # type: ignore[operator]
+            raise ValueError(
+                    f'All values for key "{key}" in {config_name} must be positive.'
+            )
+        result.append(converted)
+    return result
+
+
+def _build_lstm_search_space_from_env() -> LSTMSearchSpace:
+    """
+    Build LSTMSearchSpace instance from environment variable LSTM_SEARCH_SPACE_JSON.
+
+    The JSON object must define all keys:
+      * seq_len
+      * pred_len
+      * num_epochs
+      * hidden_size
+      * num_layers
+      * learning_rate
+      * batch_size
+    """
+    config_name = 'LSTM_SEARCH_SPACE_JSON'
+    json_config = _load_json_config_from_env(config_name)
+
+    allowed_keys = {
+        'seq_len',
+        'pred_len',
+        'num_epochs',
+        'hidden_size',
+        'num_layers',
+        'learning_rate',
+        'batch_size',
+    }
+    unknown_keys = set(json_config.keys()) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+                f'Unknown keys in {config_name}: {sorted(unknown_keys)}.'
+        )
+
+    missing_keys = allowed_keys - set(json_config.keys())
+    if missing_keys:
+        raise ValueError(
+                f'Missing keys in {config_name}: {sorted(missing_keys)}.'
+        )
+
+    seq_len_values = _extract_typed_list(
+            config=json_config,
+            key='seq_len',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    pred_len_values = _extract_typed_list(
+            config=json_config,
+            key='pred_len',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    num_epochs_values = _extract_typed_list(
+            config=json_config,
+            key='num_epochs',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    hidden_size_values = _extract_typed_list(
+            config=json_config,
+            key='hidden_size',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    num_layers_values = _extract_typed_list(
+            config=json_config,
+            key='num_layers',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    learning_rate_values = _extract_typed_list(
+            config=json_config,
+            key='learning_rate',
+            cast=lambda x: float(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    batch_size_values = _extract_typed_list(
+            config=json_config,
+            key='batch_size',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+
+    search_space = LSTMSearchSpace(
+            seq_len_values=seq_len_values,
+            pred_len_values=pred_len_values,
+            num_epochs_values=num_epochs_values,
+            hidden_size_values=hidden_size_values,
+            num_layers_values=num_layers_values,
+            learning_rate_values=learning_rate_values,
+            batch_size_values=batch_size_values,
+    )
+    return search_space
+
+
+def _build_informer_search_space_from_env() -> InformerSearchSpace:
+    """
+    Build InformerSearchSpace instance from environment variable INFORMER_SEARCH_SPACE_JSON.
+
+    The JSON object must define all keys:
+      * d_model
+      * n_heads
+      * e_layers
+      * d_layers
+      * factor
+      * dropout
+      * learning_rate
+      * batch_size
+      * epochs
+    """
+    config_name = 'INFORMER_SEARCH_SPACE_JSON'
+    json_config = _load_json_config_from_env(config_name)
+
+    allowed_keys = {
+        'd_model',
+        'n_heads',
+        'e_layers',
+        'd_layers',
+        'factor',
+        'dropout',
+        'learning_rate',
+        'batch_size',
+        'epochs',
+    }
+    unknown_keys = set(json_config.keys()) - allowed_keys
+    if unknown_keys:
+        raise ValueError(
+                f'Unknown keys in {config_name}: {sorted(unknown_keys)}.'
+        )
+
+    missing_keys = allowed_keys - set(json_config.keys())
+    if missing_keys:
+        raise ValueError(
+                f'Missing keys in {config_name}: {sorted(missing_keys)}.'
+        )
+
+    d_model_values = _extract_typed_list(
+            config=json_config,
+            key='d_model',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    n_heads_values = _extract_typed_list(
+            config=json_config,
+            key='n_heads',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    e_layers_values = _extract_typed_list(
+            config=json_config,
+            key='e_layers',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    d_layers_values = _extract_typed_list(
+            config=json_config,
+            key='d_layers',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    factor_values = _extract_typed_list(
+            config=json_config,
+            key='factor',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    dropout_values = _extract_typed_list(
+            config=json_config,
+            key='dropout',
+            cast=lambda x: float(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    learning_rate_values = _extract_typed_list(
+            config=json_config,
+            key='learning_rate',
+            cast=lambda x: float(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    batch_size_values = _extract_typed_list(
+            config=json_config,
+            key='batch_size',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+    epochs_values = _extract_typed_list(
+            config=json_config,
+            key='epochs',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
+
+    search_space = InformerSearchSpace(
+            d_model_values=d_model_values,
+            n_heads_values=n_heads_values,
+            e_layers_values=e_layers_values,
+            d_layers_values=d_layers_values,
+            factor_values=factor_values,
+            dropout_values=dropout_values,
+            learning_rate_values=learning_rate_values,
+            batch_size_values=batch_size_values,
+            epochs_values=epochs_values,
+    )
+    return search_space
 
 
 def _run_lstm_with_resource_monitoring(
@@ -309,7 +603,7 @@ def run_lstm_etth_experiment(
     Высокоуровневая функция запуска эксперимента с LSTM на ETT-датасетах (любой вариант бенчмарка ETT).
 
     Все параметры передаются явно и имеют значения по умолчанию, чтобы удобно вызывать
-    функцию из ноутбука. Функция не привязана к конкретной структуре директорий и
+    функцию из ноутбука. Функция не привязана к конкретной структуре директории и
     использует только путь к CSV-файлу.
 
     В дополнение к традиционной метрике MSE функция собирает агрегированные
@@ -397,9 +691,6 @@ def run_lstm_optuna_etth_experiment(
         csv_path: str,
         max_rows: int,
         train_ratio: float,
-        seq_len: int,
-        pred_len: int,
-        num_epochs: int,
         n_trials: int,
         target_column: str,
         model_name: str,
@@ -412,6 +703,11 @@ def run_lstm_optuna_etth_experiment(
     Результатом является ExperimentResult для лучшей конфигурации, при этом
     артефакты (предсказания и диагностика) сохраняются в каталоге artifacts_dir.
 
+    Поисковое пространство гиперпараметров задаётся через переменную окружения
+    LSTM_SEARCH_SPACE_JSON (JSON-объект). Все ключи
+    seq_len, pred_len, num_epochs, hidden_size, num_layers, learning_rate, batch_size
+    должны быть заданы явно и иметь непустые списки значений.
+
     Параметры
     ----------
     dataset_name : str
@@ -423,11 +719,11 @@ def run_lstm_optuna_etth_experiment(
     train_ratio : float
         Доля обучающей выборки.
     seq_len : int
-        Длина входной последовательности.
+        Базовая длина входной последовательности (не используется в поисковом пространстве).
     pred_len : int
-        Длина горизонта прогноза.
+        Базовая длина горизонта прогноза (не используется в поисковом пространстве).
     num_epochs : int
-        Число эпох обучения в каждой попытке.
+        Базовое число эпох (не используется в поисковом пространстве).
     n_trials : int
         Число испытаний Optuna.
     target_column : str
@@ -463,15 +759,25 @@ def run_lstm_optuna_etth_experiment(
             train_ratio=train_ratio,
     )
 
+    search_space = _build_lstm_search_space_from_env()
+    _logger.info(
+            f'LSTM search space for dataset "{dataset_name}": '
+            f'seq_len={search_space.seq_len_values}, '
+            f'pred_len={search_space.pred_len_values}, '
+            f'num_epochs={search_space.num_epochs_values}, '
+            f'hidden_size={search_space.hidden_size_values}, '
+            f'num_layers={search_space.num_layers_values}, '
+            f'learning_rate={search_space.learning_rate_values}, '
+            f'batch_size={search_space.batch_size_values}.'
+    )
+
     study = baseline_optuna.run_optuna_for_etth(
             train_df=train_df,
             valid_df=valid_df,
-            seq_len=seq_len,
-            pred_len=pred_len,
-            num_epochs=num_epochs,
+            search_space=search_space,
             n_trials=n_trials,
             target_column=target_column,
-            device_type=device_type,
+            device=device,
     )
 
     best_trial = study.best_trial
@@ -479,15 +785,18 @@ def run_lstm_optuna_etth_experiment(
     num_layers = int(best_trial.params['num_layers'])
     learning_rate = float(best_trial.params['learning_rate'])
     batch_size = int(best_trial.params['batch_size'])
+    best_seq_len = int(best_trial.params['seq_len'])
+    best_pred_len = int(best_trial.params['pred_len'])
+    best_num_epochs = int(best_trial.params['num_epochs'])
 
     hyperparams = LSTMHyperParams(
-            seq_len=seq_len,
-            pred_len=pred_len,
+            seq_len=best_seq_len,
+            pred_len=best_pred_len,
             hidden_size=hidden_size,
             num_layers=num_layers,
             learning_rate=learning_rate,
             batch_size=batch_size,
-            num_epochs=num_epochs,
+            num_epochs=best_num_epochs,
     )
 
     base_result = _run_lstm_with_resource_monitoring(
@@ -525,8 +834,6 @@ def run_lstm_optuna_etth_experiment(
 def run_informer_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int,
-        train_ratio: float,
         informer_script_path: str,
         metrics_json_path: str,
         extra_args: list[str] | None,
@@ -557,13 +864,6 @@ def run_informer_etth_experiment(
         Имя датасета (вариант семейства ETT).
     csv_path : str
         Полный путь к CSV-файлу с датасетом.
-    max_rows : int
-        Максимальное количество строк, которые загружаются из датасета (0 или меньше — без ограничения).
-        Параметр оставлен для единообразия интерфейса, но фактическое разбиение осуществляется
-        внутри внешнего скрипта Informer.
-    train_ratio : float
-        Доля обучающей выборки. Может не использоваться напрямую, если логика разбиения
-        реализована во внешнем скрипте.
     informer_script_path : str
         Путь к внешнему Python-скрипту, который запускает эксперименты Informer.
     metrics_json_path : str
@@ -580,9 +880,6 @@ def run_informer_etth_experiment(
     ExperimentResult
         Результат эксперимента с метриками Informer и дополнительными системными метриками.
     """
-    del max_rows
-    del train_ratio
-
     args_list: list[str] = []
     if extra_args is not None:
         args_list = list(extra_args)
@@ -630,6 +927,8 @@ def _build_informer_optuna_args(
                 str(float(params['learning_rate'])),
                 '--batch_size',
                 str(int(params['batch_size'])),
+                '--epochs',
+                str(int(params['epochs'])),
             ]
     )
     return args
@@ -638,8 +937,6 @@ def _build_informer_optuna_args(
 def run_informer_optuna_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int,
-        train_ratio: float,
         informer_script_path: str,
         metrics_root_dir: str,
         base_extra_args: list[str] | None,
@@ -654,16 +951,17 @@ def run_informer_optuna_etth_experiment(
     JSON-диагностикой и артефактами. Лучшая конфигурация затем переобучается,
     и её результаты возвращаются в виде ExperimentResult.
 
+    Поисковое пространство гиперпараметров задаётся через переменную окружения
+    INFORMER_SEARCH_SPACE_JSON (JSON-объект). Все ключи
+    d_model, n_heads, e_layers, d_layers, factor, dropout, learning_rate, batch_size, epochs
+    должны быть заданы явно и иметь непустые списки значений.
+
     Параметры
     ----------
     dataset_name : str
         Имя датасета (вариант семейства ETT).
     csv_path : str
         Путь к CSV-файлу датасета.
-    max_rows : int
-        Максимальное количество строк (оставлено для единообразия интерфейса).
-    train_ratio : float
-        Доля обучающей выборки (оставлено для единообразия интерфейса).
     informer_script_path : str
         Путь к внешнему скрипту-обёртке Informer.
     metrics_root_dir : str
@@ -682,9 +980,6 @@ def run_informer_optuna_etth_experiment(
     ExperimentResult
         Результат эксперимента Informer для лучшей конфигурации.
     """
-    del max_rows
-    del train_ratio
-
     if n_trials < 1:
         raise ValueError('Параметр n_trials должен быть не меньше 1.')
 
@@ -695,20 +990,55 @@ def run_informer_optuna_etth_experiment(
     metrics_root_path = Path(metrics_root_dir).resolve()
     metrics_root_path.mkdir(parents=True, exist_ok=True)
 
+    search_space = _build_informer_search_space_from_env()
+    _logger.info(
+            f'Informer search space for dataset "{dataset_name}": '
+            f'd_model={search_space.d_model_values}, '
+            f'n_heads={search_space.n_heads_values}, '
+            f'e_layers={search_space.e_layers_values}, '
+            f'd_layers={search_space.d_layers_values}, '
+            f'factor={search_space.factor_values}, '
+            f'dropout={search_space.dropout_values}, '
+            f'learning_rate={search_space.learning_rate_values}, '
+            f'batch_size={search_space.batch_size_values}, '
+            f'epochs={search_space.epochs_values}.'
+    )
+
     _logger.info(
             f'Запуск Informer+Optuna для датасета "{dataset_name}" с {n_trials} испытаниями.'
     )
 
     def objective(trial: optuna.Trial) -> float:
         params_for_cli: dict[str, float | int] = {
-            'd_model': trial.suggest_int('d_model', 128, 512, step=64),
-            'n_heads': trial.suggest_int('n_heads', 2, 8),
-            'e_layers': trial.suggest_int('e_layers', 1, 3),
-            'd_layers': trial.suggest_int('d_layers', 1, 3),
-            'factor': trial.suggest_int('factor', 1, 5),
-            'dropout': trial.suggest_float('dropout', 0.05, 0.3),
-            'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True),
-            'batch_size': trial.suggest_categorical('batch_size', [16, 32, 64]),
+            'd_model': int(
+                    trial.suggest_categorical('d_model', search_space.d_model_values)
+            ),
+            'n_heads': int(
+                    trial.suggest_categorical('n_heads', search_space.n_heads_values)
+            ),
+            'e_layers': int(
+                    trial.suggest_categorical('e_layers', search_space.e_layers_values)
+            ),
+            'd_layers': int(
+                    trial.suggest_categorical('d_layers', search_space.d_layers_values)
+            ),
+            'factor': int(
+                    trial.suggest_categorical('factor', search_space.factor_values)
+            ),
+            'dropout': float(
+                    trial.suggest_categorical('dropout', search_space.dropout_values)
+            ),
+            'learning_rate': float(
+                    trial.suggest_categorical(
+                            'learning_rate', search_space.learning_rate_values
+                    )
+            ),
+            'batch_size': int(
+                    trial.suggest_categorical('batch_size', search_space.batch_size_values)
+            ),
+            'epochs': int(
+                    trial.suggest_categorical('epochs', search_space.epochs_values)
+            ),
         }
 
         trial_args = _build_informer_optuna_args(base_args, params_for_cli)
@@ -719,8 +1049,6 @@ def run_informer_optuna_etth_experiment(
         result = run_informer_etth_experiment(
                 dataset_name=dataset_name,
                 csv_path=csv_path,
-                max_rows=0,
-                train_ratio=0.5,
                 informer_script_path=informer_script_path,
                 metrics_json_path=trial_metrics_path,
                 extra_args=trial_args,
@@ -745,8 +1073,6 @@ def run_informer_optuna_etth_experiment(
     best_result = run_informer_etth_experiment(
             dataset_name=dataset_name,
             csv_path=csv_path,
-            max_rows=0,
-            train_ratio=0.5,
             informer_script_path=informer_script_path,
             metrics_json_path=best_metrics_path,
             extra_args=best_args,
