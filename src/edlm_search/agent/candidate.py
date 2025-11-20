@@ -13,15 +13,20 @@ class Candidate:
         self.files: dict[str, str] = files
         self.idea = idea
         self.fix_attempts = fix_attempts
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
 
     @classmethod
     async def new_from_problem(cls, problem: Problem, llm_pipeline: LLMPipeline):
         """Create a new candidate by generating a solution for a given problem using an LLM."""
         device = get_torch_device('auto')
-        idea, files = await llm_pipeline.generate_files_from_template(
+        idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
                 'new_candidate',
                 problem=problem,
                 previous_failure_message=None,
                 torch_backend_name=device.type,
         )
-        return Candidate(files=files, idea=idea)
+        candidate = Candidate(files=files, idea=idea)
+        candidate.total_input_tokens = input_tokens
+        candidate.total_output_tokens = output_tokens
+        return candidate

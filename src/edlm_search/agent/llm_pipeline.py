@@ -1,7 +1,9 @@
+from __future__ import annotations
+
+import logging
 import pathlib
 import re
 from inspect import cleandoc
-from typing import Final
 
 import tiktoken
 from jinja2 import Environment
@@ -14,6 +16,8 @@ here = pathlib.Path(__file__).parent.resolve()
 jinja_env = Environment(
         loader=FileSystemLoader(str(here / 'prompts')), undefined=StrictUndefined
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class ModelOutputParseError(Exception):
@@ -53,7 +57,7 @@ class LLMPipeline:
         self._base_url: str = base_url
         self._prompt_tokens_total: int = 0
         self._completion_tokens_total: int = 0
-        self._encoding: Final | None = self._init_encoding()
+        self._encoding: tiktoken.Encoding = self._init_encoding()
 
     @property
     def model_name(self) -> str:
@@ -69,7 +73,7 @@ class LLMPipeline:
     def top_p(self) -> float:
         """The top_p setting for the LLM."""
         return self._top_p
-    
+
     @property
     def provider(self) -> str:
         """The provider of the LLM."""
@@ -80,26 +84,24 @@ class LLMPipeline:
         """The base URL of the LLM API."""
         return self._base_url
 
-    def _init_encoding(self):
+    def _init_encoding(self) -> tiktoken.Encoding:
         """
         Initialize tokenizer encoding for token counting.
 
-        If the encoding cannot be created, None is returned and token counting
-        will silently fall back to zero.
+        The method always uses the "cl100k_base" encoding. If this encoding
+        is not available in the installed tiktoken package, an exception from
+        tiktoken is propagated to the caller.
         """
-        try:
-            return tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            return None
+        encoding = tiktoken.get_encoding("cl100k_base")
+        _logger.info(
+                f'Using tiktoken encoding "{encoding.name}" (cl100k_base) for model "{self._model_name}".'
+        )
+        return encoding
 
     def _count_tokens(self, text: str) -> int:
         """
         Count tokens in the given text using the configured encoding.
-
-        If encoding is not available, returns 0.
         """
-        if self._encoding is None:
-            return 0
         if not text:
             return 0
         return len(self._encoding.encode(text))

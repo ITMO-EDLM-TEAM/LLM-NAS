@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from dataclasses import field
 from pathlib import Path
 from typing import Dict
+from typing import Final
 from typing import List
 from typing import Mapping
 from typing import Protocol
@@ -231,9 +233,12 @@ async def _generate_initial_candidate(
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Initial candidate_id={candidate_index} for dataset="{dataset_name}" '
-            f'generated successfully.'
+            f'generated successfully with input_tokens={input_tokens}, '
+            f'output_tokens={output_tokens}.'
     )
     return candidate, input_tokens, output_tokens
 
@@ -293,9 +298,12 @@ async def _generate_crossover_candidate(
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Crossover candidate for dataset="{dataset_name}", '
-            f'step={step_index} generated successfully.'
+            f'step={step_index} generated successfully with input_tokens={input_tokens}, '
+            f'output_tokens={output_tokens}.'
     )
     return candidate, input_tokens, output_tokens
 
@@ -328,9 +336,12 @@ async def _generate_fixed_candidate(
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Repaired candidate for dataset="{dataset_name}", '
-            f'candidate_id={candidate_index} generated successfully.'
+            f'candidate_id={candidate_index} generated successfully with '
+            f'input_tokens={input_tokens}, output_tokens={output_tokens}.'
     )
     return candidate, input_tokens, output_tokens
 
@@ -362,7 +373,6 @@ async def _run_single_candidate_flow(
     fix_attempts = 0
     last_error_message: str | None = None
 
-    # Initialize token counters with the cost of the initial generation
     cumulative_input_tokens = initial_input_tokens
     cumulative_output_tokens = initial_output_tokens
 
@@ -388,7 +398,6 @@ async def _run_single_candidate_flow(
                     metric_name=metric_name,
                     num_epochs=num_epochs,
             )
-            # Success: Add metadata and return
             record.metadata['fix_attempts'] = fix_attempts
             record.metadata['total_input_tokens'] = cumulative_input_tokens
             record.metadata['total_output_tokens'] = cumulative_output_tokens
@@ -396,7 +405,9 @@ async def _run_single_candidate_flow(
                 record.metadata['previous_error'] = last_error_message
             logger.info(
                     f'[LLM agent] Candidate evaluation succeeded for dataset="{dataset_name}", '
-                    f'candidate_id={candidate_index} after {fix_attempts} repairs.'
+                    f'candidate_id={candidate_index} after {fix_attempts} repairs with '
+                    f'total_input_tokens={cumulative_input_tokens}, '
+                    f'total_output_tokens={cumulative_output_tokens}.'
             )
             return record
 
@@ -423,7 +434,6 @@ async def _run_single_candidate_flow(
                             error_message=last_error_message,
                             torch_backend_name=torch_backend_name,
                     )
-                    # Accumulate tokens from the repair generation
                     cumulative_input_tokens += repair_input_tokens
                     cumulative_output_tokens += repair_output_tokens
                 except Exception as repair_exc:
@@ -432,7 +442,6 @@ async def _run_single_candidate_flow(
                         f'candidate_index={candidate_index}, error={type(repair_exc).__name__}: {repair_exc}'
                     )
                     logger.exception(f'[LLM agent] {last_error_message}')
-                    # If repair generation itself fails, no point in further attempts for this candidate
                     break
             else:
                 logger.info(
@@ -441,16 +450,16 @@ async def _run_single_candidate_flow(
                 )
                 break
 
-    # If the loop finishes, it means all attempts failed or repair generation failed.
     logger.info(
             f'[LLM agent] Candidate permanently failed for dataset="{dataset_name}", '
-            f'candidate_id={candidate_index}. Storing as unrepairable.'
+            f'candidate_id={candidate_index} with total_input_tokens={cumulative_input_tokens}, '
+            f'total_output_tokens={cumulative_output_tokens}. Storing as unrepairable.'
     )
     return AgentCandidateRecord(
             candidate_id=candidate_index,
-            idea=base_candidate.idea, # Use original idea for the failed record
+            idea=base_candidate.idea,
             metrics=None,
-            candidate=base_candidate, # Use original candidate for the failed record
+            candidate=base_candidate,
             metadata={
                 'fix_attempts': fix_attempts,
                 'last_error': last_error_message,
@@ -589,9 +598,11 @@ async def run_llm_search_for_dataset(
             last_failure_message = None
         records.append(child_record)
 
+    successful_records_final = [r for r in records if r.metrics is not None]
     logger.info(
             f'[LLM agent] Completed search on dataset="{dataset_name}", '
-            f'total_successful_candidates={len(records)}'
+            f'total_candidates={len(records)}, '
+            f'successful_candidates={len(successful_records_final)}.'
     )
     return records
 
