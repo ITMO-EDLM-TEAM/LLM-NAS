@@ -691,9 +691,6 @@ def run_lstm_optuna_etth_experiment(
         csv_path: str,
         max_rows: int,
         train_ratio: float,
-        seq_len: int,
-        pred_len: int,
-        num_epochs: int,
         n_trials: int,
         target_column: str,
         model_name: str,
@@ -744,10 +741,6 @@ def run_lstm_optuna_etth_experiment(
     ExperimentResult
         Результат эксперимента для лучшей конфигурации LSTM.
     """
-    del seq_len
-    del pred_len
-    del num_epochs
-
     if n_trials < 1:
         raise ValueError('Параметр n_trials должен быть не меньше 1.')
 
@@ -841,8 +834,6 @@ def run_lstm_optuna_etth_experiment(
 def run_informer_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int,
-        train_ratio: float,
         informer_script_path: str,
         metrics_json_path: str,
         extra_args: list[str] | None,
@@ -873,13 +864,6 @@ def run_informer_etth_experiment(
         Имя датасета (вариант семейства ETT).
     csv_path : str
         Полный путь к CSV-файлу с датасетом.
-    max_rows : int
-        Максимальное количество строк, которые загружаются из датасета (0 или меньше — без ограничения).
-        Параметр оставлен для единообразия интерфейса, но фактическое разбиение осуществляется
-        внутри внешнего скрипта Informer.
-    train_ratio : float
-        Доля обучающей выборки. Может не использоваться напрямую, если логика разбиения
-        реализована во внешнем скрипте.
     informer_script_path : str
         Путь к внешнему Python-скрипту, который запускает эксперименты Informer.
     metrics_json_path : str
@@ -896,9 +880,6 @@ def run_informer_etth_experiment(
     ExperimentResult
         Результат эксперимента с метриками Informer и дополнительными системными метриками.
     """
-    del max_rows
-    del train_ratio
-
     args_list: list[str] = []
     if extra_args is not None:
         args_list = list(extra_args)
@@ -956,8 +937,6 @@ def _build_informer_optuna_args(
 def run_informer_optuna_etth_experiment(
         dataset_name: str,
         csv_path: str,
-        max_rows: int,
-        train_ratio: float,
         informer_script_path: str,
         metrics_root_dir: str,
         base_extra_args: list[str] | None,
@@ -983,10 +962,6 @@ def run_informer_optuna_etth_experiment(
         Имя датасета (вариант семейства ETT).
     csv_path : str
         Путь к CSV-файлу датасета.
-    max_rows : int
-        Максимальное количество строк (оставлено для единообразия интерфейса).
-    train_ratio : float
-        Доля обучающей выборки (оставлено для единообразия интерфейса).
     informer_script_path : str
         Путь к внешнему скрипту-обёртке Informer.
     metrics_root_dir : str
@@ -1005,9 +980,6 @@ def run_informer_optuna_etth_experiment(
     ExperimentResult
         Результат эксперимента Informer для лучшей конфигурации.
     """
-    del max_rows
-    del train_ratio
-
     if n_trials < 1:
         raise ValueError('Параметр n_trials должен быть не меньше 1.')
 
@@ -1077,8 +1049,6 @@ def run_informer_optuna_etth_experiment(
         result = run_informer_etth_experiment(
                 dataset_name=dataset_name,
                 csv_path=csv_path,
-                max_rows=0,
-                train_ratio=0.5,
                 informer_script_path=informer_script_path,
                 metrics_json_path=trial_metrics_path,
                 extra_args=trial_args,
@@ -1103,8 +1073,6 @@ def run_informer_optuna_etth_experiment(
     best_result = run_informer_etth_experiment(
             dataset_name=dataset_name,
             csv_path=csv_path,
-            max_rows=0,
-            train_ratio=0.5,
             informer_script_path=informer_script_path,
             metrics_json_path=best_metrics_path,
             extra_args=best_args,
