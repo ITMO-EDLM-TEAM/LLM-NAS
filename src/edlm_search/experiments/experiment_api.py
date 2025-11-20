@@ -211,6 +211,7 @@ def _build_informer_search_space_from_env() -> InformerSearchSpace:
       * dropout
       * learning_rate
       * batch_size
+      * epochs
     """
     config_name = 'INFORMER_SEARCH_SPACE_JSON'
     json_config = _load_json_config_from_env(config_name)
@@ -224,6 +225,7 @@ def _build_informer_search_space_from_env() -> InformerSearchSpace:
         'dropout',
         'learning_rate',
         'batch_size',
+        'epochs',
     }
     unknown_keys = set(json_config.keys()) - allowed_keys
     if unknown_keys:
@@ -293,6 +295,13 @@ def _build_informer_search_space_from_env() -> InformerSearchSpace:
             must_be_positive=True,
             config_name=config_name,
     )
+    epochs_values = _extract_typed_list(
+            config=json_config,
+            key='epochs',
+            cast=lambda x: int(x),
+            must_be_positive=True,
+            config_name=config_name,
+    )
 
     search_space = InformerSearchSpace(
             d_model_values=d_model_values,
@@ -303,6 +312,7 @@ def _build_informer_search_space_from_env() -> InformerSearchSpace:
             dropout_values=dropout_values,
             learning_rate_values=learning_rate_values,
             batch_size_values=batch_size_values,
+            epochs_values=epochs_values,
     )
     return search_space
 
@@ -936,6 +946,8 @@ def _build_informer_optuna_args(
                 str(float(params['learning_rate'])),
                 '--batch_size',
                 str(int(params['batch_size'])),
+                '--epochs',
+                str(int(params['epochs'])),
             ]
     )
     return args
@@ -962,7 +974,7 @@ def run_informer_optuna_etth_experiment(
 
     Поисковое пространство гиперпараметров задаётся через переменную окружения
     INFORMER_SEARCH_SPACE_JSON (JSON-объект). Все ключи
-    d_model, n_heads, e_layers, d_layers, factor, dropout, learning_rate, batch_size
+    d_model, n_heads, e_layers, d_layers, factor, dropout, learning_rate, batch_size, epochs
     должны быть заданы явно и иметь непустые списки значений.
 
     Параметры
@@ -1016,7 +1028,8 @@ def run_informer_optuna_etth_experiment(
             f'factor={search_space.factor_values}, '
             f'dropout={search_space.dropout_values}, '
             f'learning_rate={search_space.learning_rate_values}, '
-            f'batch_size={search_space.batch_size_values}.'
+            f'batch_size={search_space.batch_size_values}, '
+            f'epochs={search_space.epochs_values}.'
     )
 
     _logger.info(
@@ -1050,6 +1063,9 @@ def run_informer_optuna_etth_experiment(
             ),
             'batch_size': int(
                     trial.suggest_categorical('batch_size', search_space.batch_size_values)
+            ),
+            'epochs': int(
+                    trial.suggest_categorical('epochs', search_space.epochs_values)
             ),
         }
 

@@ -74,3 +74,4 @@ class InformerSearchSpace:
     dropout_values: list[float]
     learning_rate_values: list[float]
     batch_size_values: list[int]
+    epochs_values: list[int]
