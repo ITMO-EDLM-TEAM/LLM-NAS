@@ -315,6 +315,21 @@ def _run_informer_and_get_metrics(
     return base_metrics, y_true, y_pred, dataset_name, setting_dir
 
 
+def _create_experiment_directory(metrics_path: str, model_name: str, dataset_name: str) -> Path:
+    """
+    Create a dedicated directory for a single Informer experiment.
+
+    The directory name encodes model, dataset and start time.
+    """
+    metrics_path_obj = Path(metrics_path).resolve()
+    parent = metrics_path_obj.parent
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    slug = f'informer_{model_name}_{dataset_name}_{timestamp}'
+    experiment_dir = parent / slug
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    return experiment_dir
+
+
 def _save_metrics(
         metrics_path: str,
         metrics: dict[str, float],
@@ -335,12 +350,13 @@ def _save_metrics(
     metrics : dict[str, float]
         Словарь метрик.
     """
-    metrics_path_obj = Path(metrics_path)
-    metrics_dir = metrics_path_obj.parent
-    if metrics_dir and not metrics_dir.exists():
-        metrics_dir.mkdir(parents=True, exist_ok=True)
+    experiment_dir = _create_experiment_directory(
+            metrics_path=metrics_path,
+            model_name=model_name,
+            dataset_name=dataset_name,
+    )
 
-    predictions_csv_path = metrics_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
+    predictions_csv_path = experiment_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
 
     df_predictions = pd.DataFrame(
             {
@@ -356,19 +372,25 @@ def _save_metrics(
         'extra_args': list(getattr(args, 'extra_args', [])),
     }
 
+    metrics_copy: dict[str, float] = {}
+    for key, value in metrics.items():
+        metrics_copy[key] = float(value)
+
     diagnostics = {
         'model_name': model_name,
         'dataset_name': dataset_name,
-        'metrics': metrics,
+        'metrics': metrics_copy,
         'hyperparams': hyperparams,
         'artifacts': {
             'predictions_csv': str(predictions_csv_path),
             'predictions_npy': str(setting_dir / 'pred.npy'),
             'targets_npy': str(setting_dir / 'true.npy'),
+            'informer_results_root': str(setting_dir.parent),
         },
     }
 
-    with metrics_path_obj.open('w', encoding='utf-8') as f:
+    final_metrics_path = experiment_dir / Path(metrics_path).name
+    with final_metrics_path.open('w', encoding='utf-8') as f:
         json.dump(diagnostics, f, ensure_ascii=False, indent=2)
 
 

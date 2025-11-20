@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from dataclasses import field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
 from typing import Final
@@ -15,6 +16,8 @@ import pandas as pd
 
 from .candidate import Candidate
 from .ett_evaluator import ETTEvaluator
+from .llm_artifacts import LLMAgentArtifactsWriter
+from .llm_artifacts import build_llm_artifacts_root
 from .llm_clients import DeepSeekClient
 from .llm_clients import LMStudioClient
 from .llm_clients import OpenAILikeClient
@@ -655,6 +658,17 @@ async def run_llm_search_for_all_datasets(
             f'torch_backend="{torch_backend_name}".'
     )
 
+    artifacts_root = build_llm_artifacts_root(
+            root_env_var_name='LLM_AGENT_ARTIFACTS_ROOT',
+            fallback_relative_dir='artifacts/llm_agent',
+    )
+    artifacts_writer = LLMAgentArtifactsWriter(root_dir=str(artifacts_root))
+    experiment_started_at = datetime.now()
+    experiment_dir = artifacts_writer.create_experiment_directory(
+            provider_config=provider_config,
+            search_config=config,
+    )
+
     for cfg in dataset_configs:
         dataset_name = cfg.name
         train_df = train_dfs[dataset_name]
@@ -708,9 +722,25 @@ async def run_llm_search_for_all_datasets(
             f'[LLM agent] Global search finished for {len(dataset_configs)} datasets. '
             f'Successful_datasets={len(llm_best_mse)}.'
     )
-    return LLMSearchRun(
+
+    experiment_finished_at = datetime.now()
+    run = LLMSearchRun(
             results=llm_search_results,
             best_metrics=llm_best_mse,
             provider_config=provider_config,
             search_config=config,
     )
+
+    artifacts_writer.save_run(
+            experiment_dir=experiment_dir,
+            run=run,
+            dataset_configs=dataset_configs,
+            target_column=target_column,
+            experiment_started_at=experiment_started_at,
+            experiment_finished_at=experiment_finished_at,
+    )
+
+    logger.info(
+            f'[LLM agent] Global search artifacts stored in "{experiment_dir}".'
+    )
+    return run
