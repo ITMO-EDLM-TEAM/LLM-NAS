@@ -206,7 +206,7 @@ class LLMPipeline:
 
     async def generate_files_from_template(
             self, template_name: str, **kwargs
-    ) -> tuple[str, dict[str, str]]:
+    ) -> tuple[str, dict[str, str], int, int]:
         """
         Generate files from a Jinja2 template rendered with the given context.
 
@@ -216,7 +216,8 @@ class LLMPipeline:
 
         Returns
         -------
-            A tuple containing the idea and a dictionary of file paths to file contents.
+            A tuple containing the idea, a dictionary of file paths to file contents,
+            the number of input tokens, and the number of output tokens.
         """
         template_name = template_name.removesuffix('.jinja').removesuffix('.md')
         prompt_template = jinja_env.get_template(f'{template_name}.md.jinja')
@@ -258,4 +259,4 @@ class LLMPipeline:
 
         files_dict = self._parse_xml_files(files_content)
 
-        return idea, files_dict
+        return idea, files_dict, prompt_tokens, completion_tokens

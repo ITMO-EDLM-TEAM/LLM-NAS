@@ -196,7 +196,7 @@ async def _generate_initial_candidate(
         llm_pipeline: LLMPipeline,
         previous_failure_message: str | None,
         torch_backend_name: str,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a brand new candidate using the `new_candidate` template.
 
@@ -217,14 +217,14 @@ async def _generate_initial_candidate(
 
     Returns
     -------
-    Candidate
-        Newly generated candidate.
+    tuple[Candidate, int, int]
+        A tuple containing the newly generated candidate, input tokens, and output tokens.
     """
     logger.info(
             f'[LLM agent] Generating initial candidate_id={candidate_index} '
             f'for dataset="{dataset_name}".'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='new_candidate',
             problem=problem,
             previous_failure_message=previous_failure_message,
@@ -235,7 +235,7 @@ async def _generate_initial_candidate(
             f'[LLM agent] Initial candidate_id={candidate_index} for dataset="{dataset_name}" '
             f'generated successfully.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _generate_crossover_candidate(
@@ -247,7 +247,7 @@ async def _generate_crossover_candidate(
         torch_backend_name: str,
         parent_a: AgentCandidateRecord,
         parent_b: AgentCandidateRecord,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a new candidate by crossing over two parent candidates.
 
@@ -272,15 +272,15 @@ async def _generate_crossover_candidate(
 
     Returns
     -------
-    Candidate
-        Newly generated crossover candidate.
+    tuple[Candidate, int, int]
+        A tuple containing the newly generated candidate, input tokens, and output tokens.
     """
     logger.info(
             f'[LLM agent] Generating crossover candidate for dataset="{dataset_name}", '
             f'step={step_index}, parent_a_id={parent_a.candidate_id}, '
             f'parent_b_id={parent_b.candidate_id}.'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='crossover_candidate',
             problem=problem,
             parent_a_idea=parent_a.idea,
@@ -297,7 +297,7 @@ async def _generate_crossover_candidate(
             f'[LLM agent] Crossover candidate for dataset="{dataset_name}", '
             f'step={step_index} generated successfully.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _generate_fixed_candidate(
@@ -308,7 +308,7 @@ async def _generate_fixed_candidate(
         previous_candidate: Candidate,
         error_message: str,
         torch_backend_name: str,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a repaired candidate using the `fix_candidate` template.
 
@@ -319,7 +319,7 @@ async def _generate_fixed_candidate(
             f'[LLM agent] Generating repaired candidate for dataset="{dataset_name}", '
             f'candidate_id={candidate_index}.'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='fix_candidate',
             problem=problem,
             previous_candidate_idea=previous_candidate.idea,
@@ -332,7 +332,7 @@ async def _generate_fixed_candidate(
             f'[LLM agent] Repaired candidate for dataset="{dataset_name}", '
             f'candidate_id={candidate_index} generated successfully.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _run_single_candidate_flow(
@@ -347,6 +347,8 @@ async def _run_single_candidate_flow(
         problem: Problem,
         llm_pipeline: LLMPipeline,
         torch_backend_name: str,
+        initial_input_tokens: int,
+        initial_output_tokens: int,
 ) -> AgentCandidateRecord:
     """
     Evaluate one candidate and optionally try to repair it on failure.
@@ -359,6 +361,10 @@ async def _run_single_candidate_flow(
     current_candidate = base_candidate
     fix_attempts = 0
     last_error_message: str | None = None
+
+    # Initialize token counters with the cost of the initial generation
+    cumulative_input_tokens = initial_input_tokens
+    cumulative_output_tokens = initial_output_tokens
 
     while fix_attempts < MAX_REPAIR_ATTEMPTS:
         if fix_attempts > 0:
@@ -382,8 +388,10 @@ async def _run_single_candidate_flow(
                     metric_name=metric_name,
                     num_epochs=num_epochs,
             )
-            # Success: Add fix_attempts to metadata and return
+            # Success: Add metadata and return
             record.metadata['fix_attempts'] = fix_attempts
+            record.metadata['total_input_tokens'] = cumulative_input_tokens
+            record.metadata['total_output_tokens'] = cumulative_output_tokens
             if last_error_message:
                 record.metadata['previous_error'] = last_error_message
             logger.info(
@@ -406,7 +414,7 @@ async def _run_single_candidate_flow(
                         f'for dataset="{dataset_name}", candidate_id={candidate_index}.'
                 )
                 try:
-                    current_candidate = await _generate_fixed_candidate(
+                    current_candidate, repair_input_tokens, repair_output_tokens = await _generate_fixed_candidate(
                             dataset_name=dataset_name,
                             candidate_index=candidate_index,
                             problem=problem,
@@ -415,6 +423,9 @@ async def _run_single_candidate_flow(
                             error_message=last_error_message,
                             torch_backend_name=torch_backend_name,
                     )
+                    # Accumulate tokens from the repair generation
+                    cumulative_input_tokens += repair_input_tokens
+                    cumulative_output_tokens += repair_output_tokens
                 except Exception as repair_exc:
                     last_error_message = (
                         f'Candidate repair generation failed on dataset="{dataset_name}", '
@@ -444,6 +455,8 @@ async def _run_single_candidate_flow(
                 'fix_attempts': fix_attempts,
                 'last_error': last_error_message,
                 'status': 'failed_unrepairable',
+                'total_input_tokens': cumulative_input_tokens,
+                'total_output_tokens': cumulative_output_tokens,
             },
     )
 
@@ -477,7 +490,7 @@ async def run_llm_search_for_dataset(
 
     for index in range(config.num_initial_candidates):
         try:
-            candidate = await _generate_initial_candidate(
+            candidate, input_tokens, output_tokens = await _generate_initial_candidate(
                     dataset_name=dataset_name,
                     candidate_index=index,
                     problem=problem,
@@ -505,6 +518,8 @@ async def run_llm_search_for_dataset(
                 problem=problem,
                 llm_pipeline=llm_pipeline,
                 torch_backend_name=torch_backend_name,
+                initial_input_tokens=input_tokens,
+                initial_output_tokens=output_tokens,
         )
 
         if record.metrics is None:
@@ -533,7 +548,7 @@ async def run_llm_search_for_dataset(
         )
 
         try:
-            child_candidate = await _generate_crossover_candidate(
+            child_candidate, input_tokens, output_tokens = await _generate_crossover_candidate(
                     dataset_name=dataset_name,
                     step_index=offset + 1,
                     problem=problem,
@@ -564,6 +579,8 @@ async def run_llm_search_for_dataset(
                 problem=problem,
                 llm_pipeline=llm_pipeline,
                 torch_backend_name=torch_backend_name,
+                initial_input_tokens=input_tokens,
+                initial_output_tokens=output_tokens,
         )
 
         if child_record.metrics is None:
