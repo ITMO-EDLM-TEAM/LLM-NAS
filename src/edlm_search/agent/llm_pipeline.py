@@ -51,6 +51,11 @@ class LLMPipeline:
         self._completion_tokens_total: int = 0
         self._encoding: Final | None = self._init_encoding()
 
+    @property
+    def model_name(self) -> str:
+        """Name of the LLM model used in this pipeline."""
+        return self._model_name
+
     def _init_encoding(self):
         """
         Initialize tokenizer encoding for token counting.

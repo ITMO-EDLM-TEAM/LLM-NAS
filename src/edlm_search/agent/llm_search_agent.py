@@ -548,7 +548,7 @@ async def run_llm_search_for_all_datasets(
         llm_pipeline: LLMPipeline,
         config: LLMSearchConfigProtocol,
         target_column: str,
-) -> tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float]]:
+) -> tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float], str]:
     """
     Run LLM-based architecture search with repair for all configured datasets.
 
@@ -639,4 +639,4 @@ async def run_llm_search_for_all_datasets(
             f'[LLM agent] Global search finished for {len(dataset_configs)} datasets. '
             f'Successful_datasets={len(llm_best_mse)}.'
     )
-    return llm_search_results, llm_best_mse
+    return llm_search_results, llm_best_mse, llm_pipeline.model_name
