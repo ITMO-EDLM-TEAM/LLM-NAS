@@ -49,4 +49,5 @@ class LMStudioClient(BaseLLMClient):
                 model_name=model_name,
                 temperature=temperature,
                 top_p=top_p,
+                provider='lmstudio',
         )

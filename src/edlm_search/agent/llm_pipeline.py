@@ -31,6 +31,8 @@ class LLMPipeline:
             model_name: str,
             temperature: float,
             top_p: float,
+            provider: str,
+            base_url: str,
     ):
         if async_openai is None:
             raise ValueError('Parameter "async_openai" must be provided.')
@@ -47,6 +49,8 @@ class LLMPipeline:
         self._model_name: str = model_name.strip()
         self._temperature: float = temperature_value
         self._top_p: float = top_p_value
+        self._provider: str = provider
+        self._base_url: str = base_url
         self._prompt_tokens_total: int = 0
         self._completion_tokens_total: int = 0
         self._encoding: Final | None = self._init_encoding()
@@ -55,6 +59,26 @@ class LLMPipeline:
     def model_name(self) -> str:
         """Name of the LLM model used in this pipeline."""
         return self._model_name
+
+    @property
+    def temperature(self) -> float:
+        """The temperature setting for the LLM."""
+        return self._temperature
+
+    @property
+    def top_p(self) -> float:
+        """The top_p setting for the LLM."""
+        return self._top_p
+    
+    @property
+    def provider(self) -> str:
+        """The provider of the LLM."""
+        return self._provider
+
+    @property
+    def base_url(self) -> str:
+        """The base URL of the LLM API."""
+        return self._base_url
 
     def _init_encoding(self):
         """

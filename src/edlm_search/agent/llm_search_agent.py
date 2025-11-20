@@ -60,6 +60,16 @@ class AgentCandidateRecord:
     candidate: Candidate
 
 
+@dataclass
+class LLMSearchRun:
+    """Result of a single LLM-generated candidate evaluation."""
+
+    results: Dict[str, List[AgentCandidateRecord]]
+    best_metrics: Dict[str, float]
+    provider_config: LLMProviderConfigProtocol
+    search_config: LLMSearchConfigProtocol
+
+
 def create_llm_pipeline(provider_config: LLMProviderConfigProtocol) -> LLMPipeline:
     """Create LLMPipeline instance for the given provider configuration."""
     provider_lower = provider_config.provider.lower()
@@ -548,7 +558,8 @@ async def run_llm_search_for_all_datasets(
         llm_pipeline: LLMPipeline,
         config: LLMSearchConfigProtocol,
         target_column: str,
-) -> tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float], str]:
+        provider_config: LLMProviderConfigProtocol,
+) -> LLMSearchRun:
     """
     Run LLM-based architecture search with repair for all configured datasets.
 
@@ -568,12 +579,13 @@ async def run_llm_search_for_all_datasets(
         LLM search configuration (number of candidates, metric name, epochs).
     target_column : str
         Target column name in the ETT dataset.
+    provider_config : LLMProviderConfigProtocol
+        LLM provider configuration.
 
     Returns
     -------
-    tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float]]
-        Mapping from dataset name to candidate records and mapping from dataset
-        name to the best metric value.
+    LLMSearchRun
+        An object containing the search results, best metrics, and configurations.
     """
     llm_search_results: Dict[str, List[AgentCandidateRecord]] = {}
     llm_best_mse: Dict[str, float] = {}
@@ -639,4 +651,9 @@ async def run_llm_search_for_all_datasets(
             f'[LLM agent] Global search finished for {len(dataset_configs)} datasets. '
             f'Successful_datasets={len(llm_best_mse)}.'
     )
-    return llm_search_results, llm_best_mse, llm_pipeline.model_name
+    return LLMSearchRun(
+            results=llm_search_results,
+            best_metrics=llm_best_mse,
+            provider_config=provider_config,
+            search_config=config,
+    )

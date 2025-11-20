@@ -20,6 +20,7 @@ class BaseLLMClient(ABC):
             model_name: str,
             temperature: float,
             top_p: float,
+            provider: str,
     ) -> None:
         if async_client is None:
             raise ValueError('AsyncOpenAI client instance must be provided.')
@@ -27,6 +28,7 @@ class BaseLLMClient(ABC):
         self._model_name: Final[str] = self._validate_model_name(model_name)
         self._temperature: Final[float] = self._validate_temperature(temperature)
         self._top_p: Final[float] = self._validate_top_p(top_p)
+        self._provider: Final[str] = provider
 
     @staticmethod
     def _validate_model_name(value: str) -> str:
@@ -67,4 +69,6 @@ class BaseLLMClient(ABC):
                 model_name=self._model_name,
                 temperature=self._temperature,
                 top_p=self._top_p,
+                provider=self._provider,
+                base_url=str(self._async_client.base_url),
         )
