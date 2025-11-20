@@ -23,6 +23,8 @@ from ..devices import get_torch_device
 
 logger = logging.getLogger(__name__)
 
+MAX_REPAIR_ATTEMPTS: Final[int] = 5
+
 
 class LLMProviderConfigProtocol(Protocol):
     """Structural protocol describing configuration for an LLM provider."""
@@ -56,8 +58,9 @@ class AgentCandidateRecord:
 
     candidate_id: int
     idea: str
-    metrics: Dict[str, float]
+    metrics: Dict[str, float] | None
     candidate: Candidate
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
@@ -344,78 +347,105 @@ async def _run_single_candidate_flow(
         problem: Problem,
         llm_pipeline: LLMPipeline,
         torch_backend_name: str,
-) -> tuple[AgentCandidateRecord | None, str | None]:
+) -> AgentCandidateRecord:
     """
     Evaluate one candidate and optionally try to repair it on failure.
 
     Returns
     -------
-    tuple[AgentCandidateRecord | None, str | None]
-        On success, (record, None). On failure, (None, failure_message).
+    AgentCandidateRecord
+        On success, a record with metrics. On failure, a record with metrics=None and error details in metadata.
     """
-    try:
-        record = await evaluate_single_candidate(
-                candidate_index=candidate_index,
-                candidate=base_candidate,
-                train_df=train_df,
-                valid_df=valid_df,
-                target_column=target_column,
-                metric_name=metric_name,
-                num_epochs=num_epochs,
-        )
-        return record, None
-    except Exception as exc:
-        error_message = (
-            f'Candidate evaluation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(exc).__name__}: {exc}'
-        )
-        logger.exception(f'[LLM agent] {error_message}')
+    current_candidate = base_candidate
+    fix_attempts = 0
+    last_error_message: str | None = None
 
+    while fix_attempts < MAX_REPAIR_ATTEMPTS:
+        if fix_attempts > 0:
+            logger.info(
+                    f'[LLM agent] Repair attempt {fix_attempts + 1}/{MAX_REPAIR_ATTEMPTS} '
+                    f'for dataset="{dataset_name}", candidate_id={candidate_index}.'
+            )
+        else:
+            logger.info(
+                    f'[LLM agent] Evaluating initial candidate for dataset="{dataset_name}", '
+                    f'candidate_id={candidate_index}.'
+            )
+
+        try:
+            record = await evaluate_single_candidate(
+                    candidate_index=candidate_index,
+                    candidate=current_candidate,
+                    train_df=train_df,
+                    valid_df=valid_df,
+                    target_column=target_column,
+                    metric_name=metric_name,
+                    num_epochs=num_epochs,
+            )
+            # Success: Add fix_attempts to metadata and return
+            record.metadata['fix_attempts'] = fix_attempts
+            if last_error_message:
+                record.metadata['previous_error'] = last_error_message
+            logger.info(
+                    f'[LLM agent] Candidate evaluation succeeded for dataset="{dataset_name}", '
+                    f'candidate_id={candidate_index} after {fix_attempts} repairs.'
+            )
+            return record
+
+        except Exception as exc:
+            last_error_message = (
+                f'Candidate evaluation failed on dataset="{dataset_name}", '
+                f'candidate_index={candidate_index}, error={type(exc).__name__}: {exc}'
+            )
+            logger.exception(f'[LLM agent] {last_error_message}')
+            fix_attempts += 1
+
+            if fix_attempts < MAX_REPAIR_ATTEMPTS:
+                logger.info(
+                        f'[LLM agent] Starting repair attempt {fix_attempts}/{MAX_REPAIR_ATTEMPTS} '
+                        f'for dataset="{dataset_name}", candidate_id={candidate_index}.'
+                )
+                try:
+                    current_candidate = await _generate_fixed_candidate(
+                            dataset_name=dataset_name,
+                            candidate_index=candidate_index,
+                            problem=problem,
+                            llm_pipeline=llm_pipeline,
+                            previous_candidate=current_candidate,
+                            error_message=last_error_message,
+                            torch_backend_name=torch_backend_name,
+                    )
+                except Exception as repair_exc:
+                    last_error_message = (
+                        f'Candidate repair generation failed on dataset="{dataset_name}", '
+                        f'candidate_index={candidate_index}, error={type(repair_exc).__name__}: {repair_exc}'
+                    )
+                    logger.exception(f'[LLM agent] {last_error_message}')
+                    # If repair generation itself fails, no point in further attempts for this candidate
+                    break
+            else:
+                logger.info(
+                        f'[LLM agent] Max repair attempts ({MAX_REPAIR_ATTEMPTS}) reached for '
+                        f'dataset="{dataset_name}", candidate_id={candidate_index}.'
+                )
+                break
+
+    # If the loop finishes, it means all attempts failed or repair generation failed.
     logger.info(
-            f'[LLM agent] Starting repair attempt for dataset="{dataset_name}", '
-            f'candidate_id={candidate_index}.'
+            f'[LLM agent] Candidate permanently failed for dataset="{dataset_name}", '
+            f'candidate_id={candidate_index}. Storing as unrepairable.'
     )
-
-    try:
-        fixed_candidate = await _generate_fixed_candidate(
-                dataset_name=dataset_name,
-                candidate_index=candidate_index,
-                problem=problem,
-                llm_pipeline=llm_pipeline,
-                previous_candidate=base_candidate,
-                error_message=error_message,
-                torch_backend_name=torch_backend_name,
-        )
-    except Exception as repair_exc:
-        failure_message = (
-            f'Candidate repair generation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(repair_exc).__name__}: {repair_exc}'
-        )
-        logger.exception(f'[LLM agent] {failure_message}')
-        return None, failure_message
-
-    try:
-        fixed_record = await evaluate_single_candidate(
-                candidate_index=candidate_index,
-                candidate=fixed_candidate,
-                train_df=train_df,
-                valid_df=valid_df,
-                target_column=target_column,
-                metric_name=metric_name,
-                num_epochs=num_epochs,
-        )
-        logger.info(
-                f'[LLM agent] Repair attempt for dataset="{dataset_name}", '
-                f'candidate_id={candidate_index} succeeded.'
-        )
-        return fixed_record, None
-    except Exception as final_exc:
-        failure_message = (
-            f'Candidate repair evaluation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(final_exc).__name__}: {final_exc}'
-        )
-        logger.exception(f'[LLM agent] {failure_message}')
-        return None, failure_message
+    return AgentCandidateRecord(
+            candidate_id=candidate_index,
+            idea=base_candidate.idea, # Use original idea for the failed record
+            metrics=None,
+            candidate=base_candidate, # Use original candidate for the failed record
+            metadata={
+                'fix_attempts': fix_attempts,
+                'last_error': last_error_message,
+                'status': 'failed_unrepairable',
+            },
+    )
 
 
 async def run_llm_search_for_dataset(
@@ -463,7 +493,7 @@ async def run_llm_search_for_dataset(
             logger.exception(f'[LLM agent] {last_failure_message}')
             continue
 
-        record, failure_message = await _run_single_candidate_flow(
+        record = await _run_single_candidate_flow(
                 dataset_name=dataset_name,
                 candidate_index=index,
                 base_candidate=candidate,
@@ -477,16 +507,16 @@ async def run_llm_search_for_dataset(
                 torch_backend_name=torch_backend_name,
         )
 
-        if record is None:
-            last_failure_message = failure_message
-            continue
-
-        last_failure_message = None
+        if record.metrics is None:
+            last_failure_message = record.metadata.get('last_error', None)
+        else:
+            last_failure_message = None
         records.append(record)
 
     for offset in range(config.num_crossover_candidates):
+        successful_records = [r for r in records if r.metrics is not None]
         sorted_records = sorted(
-                records,
+                successful_records,
                 key=lambda r: r.metrics.get(config.metric_name, float('inf')),
         )
         if len(sorted_records) < 2:
@@ -522,7 +552,7 @@ async def run_llm_search_for_dataset(
             continue
 
         candidate_index = config.num_initial_candidates + offset
-        child_record, failure_message = await _run_single_candidate_flow(
+        child_record = await _run_single_candidate_flow(
                 dataset_name=dataset_name,
                 candidate_index=candidate_index,
                 base_candidate=child_candidate,
@@ -536,11 +566,10 @@ async def run_llm_search_for_dataset(
                 torch_backend_name=torch_backend_name,
         )
 
-        if child_record is None:
-            last_failure_message = failure_message
-            continue
-
-        last_failure_message = None
+        if child_record.metrics is None:
+            last_failure_message = child_record.metadata.get('last_error', None)
+        else:
+            last_failure_message = None
         records.append(child_record)
 
     logger.info(
@@ -627,14 +656,14 @@ async def run_llm_search_for_all_datasets(
             continue
 
         llm_search_results[dataset_name] = records
-        if not records:
+        successful_records_for_best = [r for r in records if r.metrics is not None]
+        if not successful_records_for_best:
             logger.info(
                     f'[LLM agent] No successful candidates on dataset="{dataset_name}".'
             )
             continue
-
         best_record = min(
-                records,
+                successful_records_for_best,
                 key=lambda r: r.metrics.get(config.metric_name, float('inf')),
         )
         best_mse_value = float(

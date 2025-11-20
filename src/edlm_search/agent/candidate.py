@@ -9,9 +9,10 @@ from ..devices import get_torch_device
 class Candidate:
     """Represents a candidate solution, including code files and a descriptive idea."""
 
-    def __init__(self, files: dict[str, str], idea: str):
+    def __init__(self, files: dict[str, str], idea: str, *, fix_attempts: int = 0):
         self.files: dict[str, str] = files
         self.idea = idea
+        self.fix_attempts = fix_attempts
 
     @classmethod
     async def new_from_problem(cls, problem: Problem, llm_pipeline: LLMPipeline):
