@@ -20,6 +20,18 @@ except ImportError:  # pragma: no cover
 
 _LOGGER = logging.getLogger(__name__)
 
+INFORMER_BUILTIN_DATASETS: Final[frozenset[str]] = frozenset(
+        {
+            'ETTh1',
+            'ETTh2',
+            'ETTm1',
+            'ETTm2',
+            'WTH',
+            'ECL',
+            'Solar',
+        }
+)
+
 
 def _parse_args() -> argparse.Namespace:
     """
@@ -243,6 +255,12 @@ def _run_informer_and_get_metrics(
     data_filename: Final[str] = csv_path.name
     dataset_name: Final[str] = csv_path.stem
 
+    informer_data_name: Final[str]
+    if dataset_name in INFORMER_BUILTIN_DATASETS:
+        informer_data_name = dataset_name
+    else:
+        informer_data_name = 'custom'
+
     project_root = Path(__file__).resolve().parent
 
     filtered_extra_args = _filter_extra_args(extra_args)
@@ -253,7 +271,7 @@ def _run_informer_and_get_metrics(
         '--model',
         'informer',
         '--data',
-        dataset_name,
+        informer_data_name,
         '--root_path',
         root_path,
         '--data_path',
