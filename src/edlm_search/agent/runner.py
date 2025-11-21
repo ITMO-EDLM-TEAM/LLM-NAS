@@ -24,6 +24,7 @@ from .candidate import Candidate
 logger = logging.getLogger(__name__)
 
 _STDOUT_STREAM_LIMIT: Final[int] = 2 ** 20
+_COMM_STREAM_LIMIT: Final[int] = 2 ** 20
 
 
 class Runner(Protocol):
@@ -123,7 +124,7 @@ class UnsafeRunner:
                 os.close(comm_w)
 
                 loop = asyncio.get_running_loop()
-                comm_pipe_reader = asyncio.StreamReader()
+                comm_pipe_reader = asyncio.StreamReader(limit=_COMM_STREAM_LIMIT)
                 self._comm_transport, _ = await loop.connect_read_pipe(
                         lambda: asyncio.StreamReaderProtocol(comm_pipe_reader), os.fdopen(comm_r)
                 )
