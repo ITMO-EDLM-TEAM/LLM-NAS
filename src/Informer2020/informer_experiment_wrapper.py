@@ -368,6 +368,8 @@ def _save_metrics(
     metrics : dict[str, float]
         Словарь метрик.
     """
+    metrics_path_obj = Path(metrics_path).resolve()
+
     experiment_dir = _create_experiment_directory(
             metrics_path=metrics_path,
             model_name=model_name,
@@ -407,9 +409,14 @@ def _save_metrics(
         },
     }
 
-    final_metrics_path = experiment_dir / Path(metrics_path).name
+    final_metrics_path = metrics_path_obj
     with final_metrics_path.open('w', encoding='utf-8') as f:
         json.dump(diagnostics, f, ensure_ascii=False, indent=2)
+
+    _LOGGER.info(
+            f'Informer diagnostics JSON written at "{final_metrics_path}" '
+            f'for dataset="{dataset_name}", model="{model_name}".'
+    )
 
 
 def main() -> None:
