@@ -558,6 +558,50 @@ def _build_valid_predictions_dataframe(
     return predictions_df
 
 
+def _compute_regression_metrics(
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+) -> dict[str, float]:
+    """
+    Compute basic regression metrics for one-dimensional prediction and target series.
+
+    The following metrics are returned:
+      * mse
+      * mae
+      * rmse
+      * mape
+      * mspe
+    """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+                f'Cannot compute metrics for arrays with different shapes: '
+                f'{y_true.shape} vs {y_pred.shape}.'
+        )
+    if y_true.size == 0:
+        raise ValueError('Cannot compute metrics for empty arrays.')
+
+    y_true_flat = y_true.reshape(-1).astype(np.float64)
+    y_pred_flat = y_pred.reshape(-1).astype(np.float64)
+
+    diff = y_pred_flat - y_true_flat
+    mse = float(np.mean(diff * diff))
+    mae = float(np.mean(np.abs(diff)))
+    rmse = float(np.sqrt(mse))
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = diff / y_true_flat
+        mape = float(np.mean(np.abs(ratio)))
+        mspe = float(np.mean(np.square(ratio)))
+
+    return {
+        'mse': mse,
+        'mae': mae,
+        'rmse': rmse,
+        'mape': mape,
+        'mspe': mspe,
+    }
+
+
 def _save_metrics(
         metrics_path: str,
         metrics: dict[str, float],
@@ -624,6 +668,11 @@ def _save_metrics(
                 f'CSV с предсказаниями Informer без выравнивания записан в "{predictions_csv_path}".'
         )
 
+    recomputed_metrics = _compute_regression_metrics(
+            y_true=y_true_flat,
+            y_pred=y_pred_flat,
+    )
+
     preds_npy_path = setting_dir / 'pred.npy'
     trues_npy_path = setting_dir / 'true.npy'
 
@@ -635,6 +684,11 @@ def _save_metrics(
 
     metrics_copy: dict[str, float] = {}
     for key, value in metrics.items():
+        if key in ('mse', 'mae', 'rmse', 'mape', 'mspe'):
+            continue
+        metrics_copy[key] = float(value)
+
+    for key, value in recomputed_metrics.items():
         metrics_copy[key] = float(value)
 
     diagnostics = {
