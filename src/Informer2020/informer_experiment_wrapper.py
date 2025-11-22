@@ -20,6 +20,18 @@ except ImportError:  # pragma: no cover
 
 _LOGGER = logging.getLogger(__name__)
 
+INFORMER_BUILTIN_DATASETS: Final[frozenset[str]] = frozenset(
+        {
+            'ETTh1',
+            'ETTh2',
+            'ETTm1',
+            'ETTm2',
+            'WTH',
+            'ECL',
+            'Solar',
+        }
+)
+
 
 def _parse_args() -> argparse.Namespace:
     """
@@ -199,6 +211,86 @@ def _load_latest_metrics(
     return metrics, trues, preds, setting_dir
 
 
+def _extract_target_series(
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Преобразует массивы предсказаний Informer к одномерным рядам по целевой переменной.
+
+    Ожидаемые формы:
+      * (N, L, C) — батчи, горизонт и число каналов;
+      * (N, L) или (N,) — уже свернутые формы.
+
+    Возвращает два одномерных массива одинаковой длины.
+    """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+                f'Формы массивов истинных и предсказанных значений не совпадают: '
+                f'{y_true.shape} vs {y_pred.shape}.'
+        )
+
+    if y_true.ndim == 3:
+        true_series = y_true[:, :, -1].reshape(-1)
+        pred_series = y_pred[:, :, -1].reshape(-1)
+        return true_series.astype(np.float64), pred_series.astype(np.float64)
+
+    if y_true.ndim == 2:
+        true_series = y_true.reshape(-1)
+        pred_series = y_pred.reshape(-1)
+        return true_series.astype(np.float64), pred_series.astype(np.float64)
+
+    if y_true.ndim == 1:
+        return y_true.astype(np.float64), y_pred.astype(np.float64)
+
+    raise ValueError(f'Неожиданная форма массивов предсказаний: {y_true.shape}.')
+
+
+def _find_best_alignment_start_index(
+        full_series: np.ndarray,
+        eval_series: np.ndarray,
+) -> int:
+    """
+    Находит позицию в полном ряду full_series, с которой начинается подотрезок,
+    наилучшим образом совпадающий с eval_series (по MSE).
+
+    Возвращает индекс начала такого подотрезка.
+    """
+    full_length = int(full_series.shape[0])
+    eval_length = int(eval_series.shape[0])
+
+    if eval_length <= 0:
+        raise ValueError('Длина eval_series должна быть положительной.')
+    if eval_length > full_length:
+        raise ValueError(
+                f'Длина eval_series ({eval_length}) больше длины полного ряда ({full_length}).'
+        )
+
+    max_start = full_length - eval_length
+
+    window_limit = 10000
+    if max_start + 1 > window_limit:
+        start_min = max_start - window_limit + 1
+    else:
+        start_min = 0
+
+    best_start = 0
+    best_score = float('inf')
+
+    for start in range(start_min, max_start + 1):
+        segment = full_series[start:start + eval_length]
+        diff = segment - eval_series
+        score = float(np.mean(diff * diff))
+        if score < best_score:
+            best_score = score
+            best_start = start
+
+    _LOGGER.info(
+            f'Выбран стартовый индекс выравнивания {best_start} с MSE={best_score}.'
+    )
+    return best_start
+
+
 def _run_informer_and_get_metrics(
         data_path: str,
         num_epochs: int,
@@ -243,6 +335,12 @@ def _run_informer_and_get_metrics(
     data_filename: Final[str] = csv_path.name
     dataset_name: Final[str] = csv_path.stem
 
+    informer_data_name: Final[str]
+    if dataset_name in INFORMER_BUILTIN_DATASETS:
+        informer_data_name = dataset_name
+    else:
+        informer_data_name = 'custom'
+
     project_root = Path(__file__).resolve().parent
 
     filtered_extra_args = _filter_extra_args(extra_args)
@@ -253,7 +351,7 @@ def _run_informer_and_get_metrics(
         '--model',
         'informer',
         '--data',
-        dataset_name,
+        informer_data_name,
         '--root_path',
         root_path,
         '--data_path',
@@ -307,12 +405,201 @@ def _run_informer_and_get_metrics(
         )
 
     results_dir = project_root / 'results'
-    base_metrics, y_true, y_pred, setting_dir = _load_latest_metrics(
+    base_metrics, y_true_raw, y_pred_raw, setting_dir = _load_latest_metrics(
             results_root=str(results_dir)
     )
+
     base_metrics['total_runtime_seconds'] = total_runtime_seconds
     base_metrics['total_energy_joules'] = total_energy_joules
-    return base_metrics, y_true, y_pred, dataset_name, setting_dir
+
+    return base_metrics, y_true_raw, y_pred_raw, dataset_name, setting_dir
+
+
+def _create_experiment_directory(metrics_path: str, model_name: str, dataset_name: str) -> Path:
+    """
+    Create a dedicated directory for a single Informer experiment.
+
+    The directory name encodes model, dataset and start time.
+    """
+    metrics_path_obj = Path(metrics_path).resolve()
+    parent = metrics_path_obj.parent
+    timestamp = time.strftime('%Y%m%d-%H%M%S')
+    slug = f'informer_{model_name}_{dataset_name}_{timestamp}'
+    experiment_dir = parent / slug
+    experiment_dir.mkdir(parents=True, exist_ok=True)
+    return experiment_dir
+
+
+def _build_valid_predictions_dataframe(
+        csv_path: Path,
+        dataset_name: str,
+        y_true_full: np.ndarray,
+        y_pred_full: np.ndarray,
+) -> pd.DataFrame:
+    """
+    Строит DataFrame с датами, истинными и предсказанными значениями для валидационной части.
+
+    Для выравнивания используется сопоставление стандартизованной валидационной части ряда
+    и стандартизованного y_true из Informer, после чего предсказания де-нормализуются
+    обратно в масштаб целевой переменной.
+    """
+    if not csv_path.is_file():
+        raise FileNotFoundError(
+                f'CSV-файл датасета для выравнивания предсказаний не найден: "{csv_path}".'
+        )
+
+    df = pd.read_csv(csv_path)
+
+    if 'date' not in df.columns:
+        raise ValueError(
+                f'Колонка "date" отсутствует в датасете "{dataset_name}", выравнивание по времени невозможно.'
+        )
+
+    # Определяем целевую колонку
+    target_column_env = os.getenv('TARGET_COLUMN', 'OT')
+    target_column = target_column_env if target_column_env in df.columns else None
+    if target_column is None:
+        numeric_candidates: list[str] = []
+        for column in df.columns:
+            if column == 'date':
+                continue
+            if pd.api.types.is_numeric_dtype(df[column]):
+                numeric_candidates.append(column)
+        if not numeric_candidates:
+            raise ValueError(
+                    f'Не удалось определить числовую целевую колонку для датасета "{dataset_name}".'
+            )
+        target_column = numeric_candidates[-1]
+
+    if target_column not in df.columns:
+        raise ValueError(
+                f'Целевая колонка "{target_column}" отсутствует в датасете "{dataset_name}".'
+        )
+
+    total_rows = int(df.shape[0])
+    if total_rows <= 1:
+        raise ValueError(
+                f'Слишком мало строк в датасете "{dataset_name}" для построения валидационной части.'
+        )
+
+    # Читаем TRAIN_RATIO из окружения, чтобы согласовать разбиение с остальным пайплайном
+    train_ratio_env = os.getenv('TRAIN_RATIO', '0.8')
+    try:
+        train_ratio = float(train_ratio_env)
+    except ValueError as exc:
+        raise ValueError(f'Некорректное значение TRAIN_RATIO="{train_ratio_env}".') from exc
+
+    if not (0.0 < train_ratio < 1.0):
+        raise ValueError(
+                f'TRAIN_RATIO должно быть в диапазоне (0, 1), получено {train_ratio}.'
+        )
+
+    train_len = int(total_rows * train_ratio)
+    if train_len <= 0 or train_len >= total_rows:
+        raise ValueError(
+                f'Некорректное значение train_len={train_len} для датасета длиной {total_rows}.'
+        )
+
+    train_values = df[target_column].iloc[:train_len].to_numpy(dtype=np.float64)
+    valid_df = df.iloc[train_len:].copy()
+    valid_target = valid_df[target_column].to_numpy(dtype=np.float64)
+    valid_dates = pd.to_datetime(valid_df['date'])
+
+    # Воспроизводим стандартную стандартизацию по train-части
+    target_mean = float(np.mean(train_values))
+    target_std = float(np.std(train_values))
+    if target_std <= 0.0:
+        target_std = 1.0
+
+    valid_target_scaled = (valid_target - target_mean) / target_std
+
+    # Извлекаем последнюю компоненту из true/pred Informer (обычно это целевой канал)
+    series_true_scaled, series_pred_scaled = _extract_target_series(
+            y_true=y_true_full,
+            y_pred=y_pred_full,
+    )
+
+    if series_true_scaled.shape[0] != series_pred_scaled.shape[0]:
+        raise ValueError(
+                'Длины одномерных рядов y_true и y_pred после извлечения не совпадают.'
+        )
+
+    # Находим внутри длинного ряда Informer такой сегмент y_true, который лучше всего
+    # совпадает с стандартизованной валидацией (valid_target_scaled)
+    start_index = _find_best_alignment_start_index(
+            full_series=series_true_scaled,
+            eval_series=valid_target_scaled,
+    )
+    end_index = start_index + valid_target_scaled.shape[0]
+    if end_index > series_pred_scaled.shape[0]:
+        raise ValueError(
+                f'Диапазон [{start_index}, {end_index}) выходит за пределы ряда предсказаний длиной '
+                f'{series_pred_scaled.shape[0]}.'
+        )
+
+    aligned_pred_scaled = series_pred_scaled[start_index:end_index]
+    aligned_pred = aligned_pred_scaled * target_std + target_mean
+
+    if aligned_pred.shape[0] != valid_target.shape[0]:
+        raise ValueError(
+                f'После выравнивания длина предсказаний ({aligned_pred.shape[0]}) '
+                f'не совпадает с длиной валидационной части ({valid_target.shape[0]}).'
+        )
+
+    predictions_df = pd.DataFrame(
+            {
+                'split': ['valid'] * valid_target.shape[0],
+                'date': valid_dates.to_numpy(),
+                'y_true': valid_target,
+                'y_pred': aligned_pred.astype(np.float64),
+            }
+    )
+
+    return predictions_df
+
+
+def _compute_regression_metrics(
+        y_true: np.ndarray,
+        y_pred: np.ndarray,
+) -> dict[str, float]:
+    """
+    Compute basic regression metrics for one-dimensional prediction and target series.
+
+    The following metrics are returned:
+      * mse
+      * mae
+      * rmse
+      * mape
+      * mspe
+    """
+    if y_true.shape != y_pred.shape:
+        raise ValueError(
+                f'Cannot compute metrics for arrays with different shapes: '
+                f'{y_true.shape} vs {y_pred.shape}.'
+        )
+    if y_true.size == 0:
+        raise ValueError('Cannot compute metrics for empty arrays.')
+
+    y_true_flat = y_true.reshape(-1).astype(np.float64)
+    y_pred_flat = y_pred.reshape(-1).astype(np.float64)
+
+    diff = y_pred_flat - y_true_flat
+    mse = float(np.mean(diff * diff))
+    mae = float(np.mean(np.abs(diff)))
+    rmse = float(np.sqrt(mse))
+
+    with np.errstate(divide='ignore', invalid='ignore'):
+        ratio = diff / y_true_flat
+        mape = float(np.mean(np.abs(ratio)))
+        mspe = float(np.mean(np.square(ratio)))
+
+    return {
+        'mse': mse,
+        'mae': mae,
+        'rmse': rmse,
+        'mape': mape,
+        'mspe': mspe,
+    }
 
 
 def _save_metrics(
@@ -335,20 +622,59 @@ def _save_metrics(
     metrics : dict[str, float]
         Словарь метрик.
     """
-    metrics_path_obj = Path(metrics_path)
-    metrics_dir = metrics_path_obj.parent
-    if metrics_dir and not metrics_dir.exists():
-        metrics_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path_obj = Path(metrics_path).resolve()
 
-    predictions_csv_path = metrics_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
-
-    df_predictions = pd.DataFrame(
-            {
-                'y_true': y_true.reshape(-1),
-                'y_pred': y_pred.reshape(-1),
-            }
+    experiment_dir = _create_experiment_directory(
+            metrics_path=metrics_path,
+            model_name=model_name,
+            dataset_name=dataset_name,
     )
-    df_predictions.to_csv(predictions_csv_path, index=False)
+
+    data_csv_path = Path(args.data_path).resolve()
+
+    try:
+        predictions_df = _build_valid_predictions_dataframe(
+                csv_path=data_csv_path,
+                dataset_name=dataset_name,
+                y_true_full=y_true,
+                y_pred_full=y_pred,
+        )
+        predictions_csv_path = experiment_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
+        predictions_df.to_csv(predictions_csv_path, index=False)
+        _LOGGER.info(
+                f'CSV с выровненными предсказаниями Informer записан в "{predictions_csv_path}".'
+        )
+        y_true_flat = predictions_df['y_true'].to_numpy(dtype=np.float64)
+        y_pred_flat = predictions_df['y_pred'].to_numpy(dtype=np.float64)
+    except Exception as exc:
+        _LOGGER.warning(
+                f'Не удалось построить CSV с выровненными и де-нормализованными предсказаниями Informer: {exc}'
+        )
+        y_true_flat, y_pred_flat = _extract_target_series(
+                y_true=y_true,
+                y_pred=y_pred,
+        )
+        predictions_csv_path = experiment_dir / f'{model_name}_{dataset_name}_valid_predictions.csv'
+        fallback_df = pd.DataFrame(
+                {
+                    'split': ['valid'] * int(y_true_flat.shape[0]),
+                    'index': np.arange(int(y_true_flat.shape[0])),
+                    'y_true': y_true_flat,
+                    'y_pred': y_pred_flat,
+                }
+        )
+        fallback_df.to_csv(predictions_csv_path, index=False)
+        _LOGGER.info(
+                f'CSV с предсказаниями Informer без выравнивания записан в "{predictions_csv_path}".'
+        )
+
+    recomputed_metrics = _compute_regression_metrics(
+            y_true=y_true_flat,
+            y_pred=y_pred_flat,
+    )
+
+    preds_npy_path = setting_dir / 'pred.npy'
+    trues_npy_path = setting_dir / 'true.npy'
 
     hyperparams = {
         'train_epochs': int(getattr(args, 'epochs', 0)),
@@ -356,20 +682,43 @@ def _save_metrics(
         'extra_args': list(getattr(args, 'extra_args', [])),
     }
 
+    metrics_copy: dict[str, float] = {}
+    for key, value in metrics.items():
+        if key in ('mse', 'mae', 'rmse', 'mape', 'mspe'):
+            continue
+        metrics_copy[key] = float(value)
+
+    for key, value in recomputed_metrics.items():
+        metrics_copy[key] = float(value)
+
     diagnostics = {
         'model_name': model_name,
         'dataset_name': dataset_name,
-        'metrics': metrics,
+        'metrics': metrics_copy,
         'hyperparams': hyperparams,
         'artifacts': {
             'predictions_csv': str(predictions_csv_path),
-            'predictions_npy': str(setting_dir / 'pred.npy'),
-            'targets_npy': str(setting_dir / 'true.npy'),
+            'predictions_npy': str(preds_npy_path),
+            'targets_npy': str(trues_npy_path),
+            'informer_results_root': str(setting_dir.parent),
+        },
+        'series_preview': {
+            'y_true_min': float(np.min(y_true_flat)),
+            'y_true_max': float(np.max(y_true_flat)),
+            'y_pred_min': float(np.min(y_pred_flat)),
+            'y_pred_max': float(np.max(y_pred_flat)),
+            'num_points': int(y_true_flat.shape[0]),
         },
     }
 
-    with metrics_path_obj.open('w', encoding='utf-8') as f:
+    final_metrics_path = metrics_path_obj
+    with final_metrics_path.open('w', encoding='utf-8') as f:
         json.dump(diagnostics, f, ensure_ascii=False, indent=2)
+
+    _LOGGER.info(
+            f'Informer diagnostics JSON written at "{final_metrics_path}" '
+            f'for dataset="{dataset_name}", model="{model_name}".'
+    )
 
 
 def main() -> None:

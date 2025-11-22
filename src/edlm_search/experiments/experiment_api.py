@@ -597,7 +597,7 @@ def run_lstm_etth_experiment(
         num_epochs: int,
         model_name: str,
         artifacts_dir: str,
-        device_type: str = 'auto',
+        device_type: str,
 ) -> ExperimentResult:
     """
     Высокоуровневая функция запуска эксперимента с LSTM на ETT-датасетах (любой вариант бенчмарка ETT).
@@ -695,7 +695,7 @@ def run_lstm_optuna_etth_experiment(
         target_column: str,
         model_name: str,
         artifacts_dir: str,
-        device_type: str = 'auto',
+        device_type: str,
 ) -> ExperimentResult:
     """
     Запускает поиск гиперпараметров LSTM с помощью Optuna и обучает лучшую модель.
@@ -831,6 +831,39 @@ def run_lstm_optuna_etth_experiment(
     return result
 
 
+def _build_informer_optuna_args(
+        base_extra_args: list[str],
+        params: dict[str, float | int],
+) -> list[str]:
+    """
+    Build CLI arguments list for Informer from base arguments and Optuna parameters.
+    """
+    args = list(base_extra_args)
+    args.extend(
+            [
+                '--d_model',
+                str(int(params['d_model'])),
+                '--n_heads',
+                str(int(params['n_heads'])),
+                '--e_layers',
+                str(int(params['e_layers'])),
+                '--d_layers',
+                str(int(params['d_layers'])),
+                '--factor',
+                str(int(params['factor'])),
+                '--dropout',
+                str(float(params['dropout'])),
+                '--learning_rate',
+                str(float(params['learning_rate'])),
+                '--batch_size',
+                str(int(params['batch_size'])),
+                '--epochs',
+                str(int(params['epochs'])),
+            ]
+    )
+    return args
+
+
 def run_informer_etth_experiment(
         dataset_name: str,
         csv_path: str,
@@ -899,39 +932,6 @@ def run_informer_etth_experiment(
             model_name=model_name,
     )
     return result
-
-
-def _build_informer_optuna_args(
-        base_extra_args: list[str],
-        params: dict[str, float | int],
-) -> list[str]:
-    """
-    Build CLI arguments list for Informer from base arguments and Optuna parameters.
-    """
-    args = list(base_extra_args)
-    args.extend(
-            [
-                '--d_model',
-                str(int(params['d_model'])),
-                '--n_heads',
-                str(int(params['n_heads'])),
-                '--e_layers',
-                str(int(params['e_layers'])),
-                '--d_layers',
-                str(int(params['d_layers'])),
-                '--factor',
-                str(int(params['factor'])),
-                '--dropout',
-                str(float(params['dropout'])),
-                '--learning_rate',
-                str(float(params['learning_rate'])),
-                '--batch_size',
-                str(int(params['batch_size'])),
-                '--epochs',
-                str(int(params['epochs'])),
-            ]
-    )
-    return args
 
 
 def run_informer_optuna_etth_experiment(

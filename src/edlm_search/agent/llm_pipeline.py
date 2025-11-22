@@ -1,7 +1,9 @@
+from __future__ import annotations
+
+import logging
 import pathlib
 import re
 from inspect import cleandoc
-from typing import Final
 
 import tiktoken
 from jinja2 import Environment
@@ -14,6 +16,8 @@ here = pathlib.Path(__file__).parent.resolve()
 jinja_env = Environment(
         loader=FileSystemLoader(str(here / 'prompts')), undefined=StrictUndefined
 )
+
+_logger = logging.getLogger(__name__)
 
 
 class ModelOutputParseError(Exception):
@@ -31,6 +35,8 @@ class LLMPipeline:
             model_name: str,
             temperature: float,
             top_p: float,
+            provider: str,
+            base_url: str,
     ):
         if async_openai is None:
             raise ValueError('Parameter "async_openai" must be provided.')
@@ -47,30 +53,55 @@ class LLMPipeline:
         self._model_name: str = model_name.strip()
         self._temperature: float = temperature_value
         self._top_p: float = top_p_value
+        self._provider: str = provider
+        self._base_url: str = base_url
         self._prompt_tokens_total: int = 0
         self._completion_tokens_total: int = 0
-        self._encoding: Final | None = self._init_encoding()
+        self._encoding: tiktoken.Encoding = self._init_encoding()
 
-    def _init_encoding(self):
+    @property
+    def model_name(self) -> str:
+        """Name of the LLM model used in this pipeline."""
+        return self._model_name
+
+    @property
+    def temperature(self) -> float:
+        """The temperature setting for the LLM."""
+        return self._temperature
+
+    @property
+    def top_p(self) -> float:
+        """The top_p setting for the LLM."""
+        return self._top_p
+
+    @property
+    def provider(self) -> str:
+        """The provider of the LLM."""
+        return self._provider
+
+    @property
+    def base_url(self) -> str:
+        """The base URL of the LLM API."""
+        return self._base_url
+
+    def _init_encoding(self) -> tiktoken.Encoding:
         """
         Initialize tokenizer encoding for token counting.
 
-        If the encoding cannot be created, None is returned and token counting
-        will silently fall back to zero.
+        The method always uses the "cl100k_base" encoding. If this encoding
+        is not available in the installed tiktoken package, an exception from
+        tiktoken is propagated to the caller.
         """
-        try:
-            return tiktoken.get_encoding("cl100k_base")
-        except Exception:
-            return None
+        encoding = tiktoken.get_encoding("cl100k_base")
+        _logger.info(
+                f'Using tiktoken encoding "{encoding.name}" (cl100k_base) for model "{self._model_name}".'
+        )
+        return encoding
 
     def _count_tokens(self, text: str) -> int:
         """
         Count tokens in the given text using the configured encoding.
-
-        If encoding is not available, returns 0.
         """
-        if self._encoding is None:
-            return 0
         if not text:
             return 0
         return len(self._encoding.encode(text))
@@ -177,7 +208,7 @@ class LLMPipeline:
 
     async def generate_files_from_template(
             self, template_name: str, **kwargs
-    ) -> tuple[str, dict[str, str]]:
+    ) -> tuple[str, dict[str, str], int, int]:
         """
         Generate files from a Jinja2 template rendered with the given context.
 
@@ -187,7 +218,8 @@ class LLMPipeline:
 
         Returns
         -------
-            A tuple containing the idea and a dictionary of file paths to file contents.
+            A tuple containing the idea, a dictionary of file paths to file contents,
+            the number of input tokens, and the number of output tokens.
         """
         template_name = template_name.removesuffix('.jinja').removesuffix('.md')
         prompt_template = jinja_env.get_template(f'{template_name}.md.jinja')
@@ -229,4 +261,4 @@ class LLMPipeline:
 
         files_dict = self._parse_xml_files(files_content)
 
-        return idea, files_dict
+        return idea, files_dict, prompt_tokens, completion_tokens

@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from dataclasses import field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict
+from typing import Final
 from typing import List
 from typing import Mapping
 from typing import Protocol
@@ -13,6 +16,8 @@ import pandas as pd
 
 from .candidate import Candidate
 from .ett_evaluator import ETTEvaluator
+from .llm_artifacts import LLMAgentArtifactsWriter
+from .llm_artifacts import build_llm_artifacts_root
 from .llm_clients import DeepSeekClient
 from .llm_clients import LMStudioClient
 from .llm_clients import OpenAILikeClient
@@ -22,6 +27,8 @@ from .runner import UnsafeRunner
 from ..devices import get_torch_device
 
 logger = logging.getLogger(__name__)
+
+MAX_REPAIR_ATTEMPTS: Final[int] = 5
 
 
 class LLMProviderConfigProtocol(Protocol):
@@ -56,8 +63,19 @@ class AgentCandidateRecord:
 
     candidate_id: int
     idea: str
-    metrics: Dict[str, float]
+    metrics: Dict[str, float] | None
     candidate: Candidate
+    metadata: dict[str, object] = field(default_factory=dict)
+
+
+@dataclass
+class LLMSearchRun:
+    """Result of a single LLM-generated candidate evaluation."""
+
+    results: Dict[str, List[AgentCandidateRecord]]
+    best_metrics: Dict[str, float]
+    provider_config: LLMProviderConfigProtocol
+    search_config: LLMSearchConfigProtocol
 
 
 def create_llm_pipeline(provider_config: LLMProviderConfigProtocol) -> LLMPipeline:
@@ -183,7 +201,7 @@ async def _generate_initial_candidate(
         llm_pipeline: LLMPipeline,
         previous_failure_message: str | None,
         torch_backend_name: str,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a brand new candidate using the `new_candidate` template.
 
@@ -204,25 +222,28 @@ async def _generate_initial_candidate(
 
     Returns
     -------
-    Candidate
-        Newly generated candidate.
+    tuple[Candidate, int, int]
+        A tuple containing the newly generated candidate, input tokens, and output tokens.
     """
     logger.info(
             f'[LLM agent] Generating initial candidate_id={candidate_index} '
             f'for dataset="{dataset_name}".'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='new_candidate',
             problem=problem,
             previous_failure_message=previous_failure_message,
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Initial candidate_id={candidate_index} for dataset="{dataset_name}" '
-            f'generated successfully.'
+            f'generated successfully with input_tokens={input_tokens}, '
+            f'output_tokens={output_tokens}.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _generate_crossover_candidate(
@@ -234,7 +255,7 @@ async def _generate_crossover_candidate(
         torch_backend_name: str,
         parent_a: AgentCandidateRecord,
         parent_b: AgentCandidateRecord,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a new candidate by crossing over two parent candidates.
 
@@ -259,15 +280,15 @@ async def _generate_crossover_candidate(
 
     Returns
     -------
-    Candidate
-        Newly generated crossover candidate.
+    tuple[Candidate, int, int]
+        A tuple containing the newly generated candidate, input tokens, and output tokens.
     """
     logger.info(
             f'[LLM agent] Generating crossover candidate for dataset="{dataset_name}", '
             f'step={step_index}, parent_a_id={parent_a.candidate_id}, '
             f'parent_b_id={parent_b.candidate_id}.'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='crossover_candidate',
             problem=problem,
             parent_a_idea=parent_a.idea,
@@ -280,11 +301,14 @@ async def _generate_crossover_candidate(
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Crossover candidate for dataset="{dataset_name}", '
-            f'step={step_index} generated successfully.'
+            f'step={step_index} generated successfully with input_tokens={input_tokens}, '
+            f'output_tokens={output_tokens}.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _generate_fixed_candidate(
@@ -295,7 +319,7 @@ async def _generate_fixed_candidate(
         previous_candidate: Candidate,
         error_message: str,
         torch_backend_name: str,
-) -> Candidate:
+) -> tuple[Candidate, int, int]:
     """
     Generate a repaired candidate using the `fix_candidate` template.
 
@@ -306,7 +330,7 @@ async def _generate_fixed_candidate(
             f'[LLM agent] Generating repaired candidate for dataset="{dataset_name}", '
             f'candidate_id={candidate_index}.'
     )
-    idea, files = await llm_pipeline.generate_files_from_template(
+    idea, files, input_tokens, output_tokens = await llm_pipeline.generate_files_from_template(
             template_name='fix_candidate',
             problem=problem,
             previous_candidate_idea=previous_candidate.idea,
@@ -315,11 +339,14 @@ async def _generate_fixed_candidate(
             torch_backend_name=torch_backend_name,
     )
     candidate = Candidate(files=files, idea=idea)
+    candidate.total_input_tokens = input_tokens
+    candidate.total_output_tokens = output_tokens
     logger.info(
             f'[LLM agent] Repaired candidate for dataset="{dataset_name}", '
-            f'candidate_id={candidate_index} generated successfully.'
+            f'candidate_id={candidate_index} generated successfully with '
+            f'input_tokens={input_tokens}, output_tokens={output_tokens}.'
     )
-    return candidate
+    return candidate, input_tokens, output_tokens
 
 
 async def _run_single_candidate_flow(
@@ -334,78 +361,116 @@ async def _run_single_candidate_flow(
         problem: Problem,
         llm_pipeline: LLMPipeline,
         torch_backend_name: str,
-) -> tuple[AgentCandidateRecord | None, str | None]:
+        initial_input_tokens: int,
+        initial_output_tokens: int,
+) -> AgentCandidateRecord:
     """
     Evaluate one candidate and optionally try to repair it on failure.
 
     Returns
     -------
-    tuple[AgentCandidateRecord | None, str | None]
-        On success, (record, None). On failure, (None, failure_message).
+    AgentCandidateRecord
+        On success, a record with metrics. On failure, a record with metrics=None and error details in metadata.
     """
-    try:
-        record = await evaluate_single_candidate(
-                candidate_index=candidate_index,
-                candidate=base_candidate,
-                train_df=train_df,
-                valid_df=valid_df,
-                target_column=target_column,
-                metric_name=metric_name,
-                num_epochs=num_epochs,
-        )
-        return record, None
-    except Exception as exc:
-        error_message = (
-            f'Candidate evaluation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(exc).__name__}: {exc}'
-        )
-        logger.exception(f'[LLM agent] {error_message}')
+    current_candidate = base_candidate
+    fix_attempts = 0
+    last_error_message: str | None = None
+
+    cumulative_input_tokens = initial_input_tokens
+    cumulative_output_tokens = initial_output_tokens
+
+    while fix_attempts < MAX_REPAIR_ATTEMPTS:
+        if fix_attempts > 0:
+            logger.info(
+                    f'[LLM agent] Repair attempt {fix_attempts + 1}/{MAX_REPAIR_ATTEMPTS} '
+                    f'for dataset="{dataset_name}", candidate_id={candidate_index}.'
+            )
+        else:
+            logger.info(
+                    f'[LLM agent] Evaluating initial candidate for dataset="{dataset_name}", '
+                    f'candidate_id={candidate_index}.'
+            )
+
+        try:
+            record = await evaluate_single_candidate(
+                    candidate_index=candidate_index,
+                    candidate=current_candidate,
+                    train_df=train_df,
+                    valid_df=valid_df,
+                    target_column=target_column,
+                    metric_name=metric_name,
+                    num_epochs=num_epochs,
+            )
+            record.metadata['fix_attempts'] = fix_attempts
+            record.metadata['total_input_tokens'] = cumulative_input_tokens
+            record.metadata['total_output_tokens'] = cumulative_output_tokens
+            if last_error_message:
+                record.metadata['previous_error'] = last_error_message
+            logger.info(
+                    f'[LLM agent] Candidate evaluation succeeded for dataset="{dataset_name}", '
+                    f'candidate_id={candidate_index} after {fix_attempts} repairs with '
+                    f'total_input_tokens={cumulative_input_tokens}, '
+                    f'total_output_tokens={cumulative_output_tokens}.'
+            )
+            return record
+
+        except Exception as exc:
+            last_error_message = (
+                f'Candidate evaluation failed on dataset="{dataset_name}", '
+                f'candidate_index={candidate_index}, error={type(exc).__name__}: {exc}'
+            )
+            logger.exception(f'[LLM agent] {last_error_message}')
+            fix_attempts += 1
+
+            if fix_attempts < MAX_REPAIR_ATTEMPTS:
+                logger.info(
+                        f'[LLM agent] Starting repair attempt {fix_attempts}/{MAX_REPAIR_ATTEMPTS} '
+                        f'for dataset="{dataset_name}", candidate_id={candidate_index}.'
+                )
+                try:
+                    current_candidate, repair_input_tokens, repair_output_tokens = await _generate_fixed_candidate(
+                            dataset_name=dataset_name,
+                            candidate_index=candidate_index,
+                            problem=problem,
+                            llm_pipeline=llm_pipeline,
+                            previous_candidate=current_candidate,
+                            error_message=last_error_message,
+                            torch_backend_name=torch_backend_name,
+                    )
+                    cumulative_input_tokens += repair_input_tokens
+                    cumulative_output_tokens += repair_output_tokens
+                except Exception as repair_exc:
+                    last_error_message = (
+                        f'Candidate repair generation failed on dataset="{dataset_name}", '
+                        f'candidate_index={candidate_index}, error={type(repair_exc).__name__}: {repair_exc}'
+                    )
+                    logger.exception(f'[LLM agent] {last_error_message}')
+                    break
+            else:
+                logger.info(
+                        f'[LLM agent] Max repair attempts ({MAX_REPAIR_ATTEMPTS}) reached for '
+                        f'dataset="{dataset_name}", candidate_id={candidate_index}.'
+                )
+                break
 
     logger.info(
-            f'[LLM agent] Starting repair attempt for dataset="{dataset_name}", '
-            f'candidate_id={candidate_index}.'
+            f'[LLM agent] Candidate permanently failed for dataset="{dataset_name}", '
+            f'candidate_id={candidate_index} with total_input_tokens={cumulative_input_tokens}, '
+            f'total_output_tokens={cumulative_output_tokens}. Storing as unrepairable.'
     )
-
-    try:
-        fixed_candidate = await _generate_fixed_candidate(
-                dataset_name=dataset_name,
-                candidate_index=candidate_index,
-                problem=problem,
-                llm_pipeline=llm_pipeline,
-                previous_candidate=base_candidate,
-                error_message=error_message,
-                torch_backend_name=torch_backend_name,
-        )
-    except Exception as repair_exc:
-        failure_message = (
-            f'Candidate repair generation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(repair_exc).__name__}: {repair_exc}'
-        )
-        logger.exception(f'[LLM agent] {failure_message}')
-        return None, failure_message
-
-    try:
-        fixed_record = await evaluate_single_candidate(
-                candidate_index=candidate_index,
-                candidate=fixed_candidate,
-                train_df=train_df,
-                valid_df=valid_df,
-                target_column=target_column,
-                metric_name=metric_name,
-                num_epochs=num_epochs,
-        )
-        logger.info(
-                f'[LLM agent] Repair attempt for dataset="{dataset_name}", '
-                f'candidate_id={candidate_index} succeeded.'
-        )
-        return fixed_record, None
-    except Exception as final_exc:
-        failure_message = (
-            f'Candidate repair evaluation failed on dataset="{dataset_name}", '
-            f'candidate_index={candidate_index}, error={type(final_exc).__name__}: {final_exc}'
-        )
-        logger.exception(f'[LLM agent] {failure_message}')
-        return None, failure_message
+    return AgentCandidateRecord(
+            candidate_id=candidate_index,
+            idea=base_candidate.idea,
+            metrics=None,
+            candidate=base_candidate,
+            metadata={
+                'fix_attempts': fix_attempts,
+                'last_error': last_error_message,
+                'status': 'failed_unrepairable',
+                'total_input_tokens': cumulative_input_tokens,
+                'total_output_tokens': cumulative_output_tokens,
+            },
+    )
 
 
 async def run_llm_search_for_dataset(
@@ -437,7 +502,7 @@ async def run_llm_search_for_dataset(
 
     for index in range(config.num_initial_candidates):
         try:
-            candidate = await _generate_initial_candidate(
+            candidate, input_tokens, output_tokens = await _generate_initial_candidate(
                     dataset_name=dataset_name,
                     candidate_index=index,
                     problem=problem,
@@ -453,7 +518,7 @@ async def run_llm_search_for_dataset(
             logger.exception(f'[LLM agent] {last_failure_message}')
             continue
 
-        record, failure_message = await _run_single_candidate_flow(
+        record = await _run_single_candidate_flow(
                 dataset_name=dataset_name,
                 candidate_index=index,
                 base_candidate=candidate,
@@ -465,18 +530,20 @@ async def run_llm_search_for_dataset(
                 problem=problem,
                 llm_pipeline=llm_pipeline,
                 torch_backend_name=torch_backend_name,
+                initial_input_tokens=input_tokens,
+                initial_output_tokens=output_tokens,
         )
 
-        if record is None:
-            last_failure_message = failure_message
-            continue
-
-        last_failure_message = None
+        if record.metrics is None:
+            last_failure_message = record.metadata.get('last_error', None)
+        else:
+            last_failure_message = None
         records.append(record)
 
     for offset in range(config.num_crossover_candidates):
+        successful_records = [r for r in records if r.metrics is not None]
         sorted_records = sorted(
-                records,
+                successful_records,
                 key=lambda r: r.metrics.get(config.metric_name, float('inf')),
         )
         if len(sorted_records) < 2:
@@ -493,7 +560,7 @@ async def run_llm_search_for_dataset(
         )
 
         try:
-            child_candidate = await _generate_crossover_candidate(
+            child_candidate, input_tokens, output_tokens = await _generate_crossover_candidate(
                     dataset_name=dataset_name,
                     step_index=offset + 1,
                     problem=problem,
@@ -512,7 +579,7 @@ async def run_llm_search_for_dataset(
             continue
 
         candidate_index = config.num_initial_candidates + offset
-        child_record, failure_message = await _run_single_candidate_flow(
+        child_record = await _run_single_candidate_flow(
                 dataset_name=dataset_name,
                 candidate_index=candidate_index,
                 base_candidate=child_candidate,
@@ -524,18 +591,21 @@ async def run_llm_search_for_dataset(
                 problem=problem,
                 llm_pipeline=llm_pipeline,
                 torch_backend_name=torch_backend_name,
+                initial_input_tokens=input_tokens,
+                initial_output_tokens=output_tokens,
         )
 
-        if child_record is None:
-            last_failure_message = failure_message
-            continue
-
-        last_failure_message = None
+        if child_record.metrics is None:
+            last_failure_message = child_record.metadata.get('last_error', None)
+        else:
+            last_failure_message = None
         records.append(child_record)
 
+    successful_records_final = [r for r in records if r.metrics is not None]
     logger.info(
             f'[LLM agent] Completed search on dataset="{dataset_name}", '
-            f'total_successful_candidates={len(records)}'
+            f'total_candidates={len(records)}, '
+            f'successful_candidates={len(successful_records_final)}.'
     )
     return records
 
@@ -548,7 +618,8 @@ async def run_llm_search_for_all_datasets(
         llm_pipeline: LLMPipeline,
         config: LLMSearchConfigProtocol,
         target_column: str,
-) -> tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float]]:
+        provider_config: LLMProviderConfigProtocol,
+) -> LLMSearchRun:
     """
     Run LLM-based architecture search with repair for all configured datasets.
 
@@ -568,12 +639,13 @@ async def run_llm_search_for_all_datasets(
         LLM search configuration (number of candidates, metric name, epochs).
     target_column : str
         Target column name in the ETT dataset.
+    provider_config : LLMProviderConfigProtocol
+        LLM provider configuration.
 
     Returns
     -------
-    tuple[Dict[str, List[AgentCandidateRecord]], Dict[str, float]]
-        Mapping from dataset name to candidate records and mapping from dataset
-        name to the best metric value.
+    LLMSearchRun
+        An object containing the search results, best metrics, and configurations.
     """
     llm_search_results: Dict[str, List[AgentCandidateRecord]] = {}
     llm_best_mse: Dict[str, float] = {}
@@ -584,6 +656,17 @@ async def run_llm_search_for_all_datasets(
     logger.info(
             f'[LLM agent] Global search started for {len(dataset_configs)} datasets with '
             f'torch_backend="{torch_backend_name}".'
+    )
+
+    artifacts_root = build_llm_artifacts_root(
+            root_env_var_name='LLM_AGENT_ARTIFACTS_ROOT',
+            fallback_relative_dir='artifacts/llm_agent',
+    )
+    artifacts_writer = LLMAgentArtifactsWriter(root_dir=str(artifacts_root))
+    experiment_started_at = datetime.now()
+    experiment_dir = artifacts_writer.create_experiment_directory(
+            provider_config=provider_config,
+            search_config=config,
     )
 
     for cfg in dataset_configs:
@@ -615,14 +698,14 @@ async def run_llm_search_for_all_datasets(
             continue
 
         llm_search_results[dataset_name] = records
-        if not records:
+        successful_records_for_best = [r for r in records if r.metrics is not None]
+        if not successful_records_for_best:
             logger.info(
                     f'[LLM agent] No successful candidates on dataset="{dataset_name}".'
             )
             continue
-
         best_record = min(
-                records,
+                successful_records_for_best,
                 key=lambda r: r.metrics.get(config.metric_name, float('inf')),
         )
         best_mse_value = float(
@@ -639,4 +722,25 @@ async def run_llm_search_for_all_datasets(
             f'[LLM agent] Global search finished for {len(dataset_configs)} datasets. '
             f'Successful_datasets={len(llm_best_mse)}.'
     )
-    return llm_search_results, llm_best_mse
+
+    experiment_finished_at = datetime.now()
+    run = LLMSearchRun(
+            results=llm_search_results,
+            best_metrics=llm_best_mse,
+            provider_config=provider_config,
+            search_config=config,
+    )
+
+    artifacts_writer.save_run(
+            experiment_dir=experiment_dir,
+            run=run,
+            dataset_configs=dataset_configs,
+            target_column=target_column,
+            experiment_started_at=experiment_started_at,
+            experiment_finished_at=experiment_finished_at,
+    )
+
+    logger.info(
+            f'[LLM agent] Global search artifacts stored in "{experiment_dir}".'
+    )
+    return run
