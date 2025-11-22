@@ -224,7 +224,7 @@ def create_dataloaders_for_etth(
     if target_column not in valid_df.columns:
         raise ValueError(f"В валидационном датафрейме отсутствует колонка {target_column!r}.")
 
-    feature_columns = [c for c in train_df.columns if c not in ("date", target_column)]
+    feature_columns = [c for c in train_df.columns if c != "date"]
 
     if not feature_columns:
         raise ValueError("Список признаков пуст — невозможно построить датасет для обучения.")
@@ -244,19 +244,197 @@ def create_dataloaders_for_etth(
             target_column=target_column,
     )
 
+    train_samples = len(train_dataset)
+    valid_samples = len(valid_dataset)
+
+    if train_samples < batch_size:
+        logger.warning(
+                f'Размер обучающего набора ({train_samples}) меньше batch_size ({batch_size}). '
+                f'Будет использован один неполный батч.'
+        )
+    if valid_samples < batch_size:
+        logger.warning(
+                f'Размер валидационного набора ({valid_samples}) меньше batch_size ({batch_size}). '
+                f'Будет использован один неполный батч.'
+        )
+
     train_loader = DataLoader(
             dataset=train_dataset,
             batch_size=batch_size,
             shuffle=True,
-            drop_last=True,
+            drop_last=False,
     )
     valid_loader = DataLoader(
             dataset=valid_dataset,
             batch_size=batch_size,
             shuffle=False,
-            drop_last=True,
+            drop_last=False,
     )
     return train_loader, valid_loader, feature_columns
+
+
+def _extract_history_frame_for_autoregression(
+        train_loader: DataLoader,
+        seq_len: int,
+        feature_columns: list[str],
+        target_column: str,
+) -> pd.DataFrame | None:
+    """
+    Сформировать контекст из обучающей выборки для авторегрессионного прогноза на валидации.
+    """
+    dataset = getattr(train_loader, 'dataset', None)
+    if not isinstance(dataset, ETTSequenceDataset):
+        return None
+
+    if dataset._feature_columns != feature_columns:
+        raise ValueError(
+                'Наборы признаков обучающего и валидационного датасетов различаются, '
+                'невозможно выполнить авторегрессионную оценку.'
+        )
+    if dataset._target_column != target_column:
+        raise ValueError(
+                'Целевые колонки обучающего и валидационного датасетов различаются, '
+                'невозможно выполнить авторегрессионную оценку.'
+        )
+
+    df_train = dataset._df
+    if len(df_train) < seq_len:
+        raise ValueError(
+                'Обучающий датасет слишком короткий для формирования авторегрессионного контекста.'
+        )
+    history_frame = df_train.iloc[-seq_len:].copy()
+    return history_frame
+
+
+def _build_autoregressive_predictions(
+        model: SimpleLSTMForecaster,
+        data_frame: pd.DataFrame,
+        feature_columns: list[str],
+        target_column: str,
+        seq_len: int,
+        device: torch.device,
+        history_frame: pd.DataFrame | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Построить авторегрессионные предсказания по одному шагу вперёд для указанного датафрейма.
+
+    Если передан history_frame, он используется как «тёплый старт» и обеспечивает seq_len
+    последних известных наблюдений перед началом прогнозирования. Все последующие шаги
+    выполняются строго на ранее предсказанных значениях целевой переменной.
+    """
+    if seq_len <= 0:
+        raise ValueError("seq_len должен быть положительным целым числом для авторегрессии.")
+    if target_column not in data_frame.columns:
+        raise ValueError(
+                f'В датафрейме отсутствует колонка таргета {target_column!r} для авторегрессии.'
+        )
+    if target_column not in feature_columns:
+        raise ValueError(
+                f'Колонка таргета {target_column!r} должна присутствовать в feature_columns '
+                f'для авторегрессии.'
+        )
+
+    history_rows = 0
+    frames_to_concat: list[pd.DataFrame] = []
+    if history_frame is not None:
+        required_columns = set(feature_columns)
+        required_columns.add(target_column)
+        missing_history_columns = [c for c in required_columns if c not in history_frame.columns]
+        if missing_history_columns:
+            raise ValueError(
+                    'history_frame не содержит необходимые колонки: '
+                    f'{sorted(missing_history_columns)}.'
+            )
+        frames_to_concat.append(history_frame.reset_index(drop=True))
+        history_rows = len(history_frame)
+
+    frames_to_concat.append(data_frame.reset_index(drop=True))
+    combined_df = pd.concat(frames_to_concat, axis=0, ignore_index=True)
+
+    combined_values = combined_df[feature_columns].to_numpy(dtype=np.float32)
+    combined_targets = combined_df[target_column].to_numpy(dtype=np.float32)
+
+    total_rows = int(combined_values.shape[0])
+    if total_rows <= seq_len:
+        raise ValueError(
+                f'Для авторегрессии требуется больше строк, чем seq_len={seq_len}. '
+                f'Текущий размер датафрейма: {total_rows}.'
+        )
+
+    target_feature_index = feature_columns.index(target_column)
+
+    prediction_start_index = max(seq_len, history_rows)
+    if prediction_start_index >= total_rows:
+        raise ValueError(
+                'Недостаточно наблюдений после контекста для авторегрессионного прогноза.'
+        )
+
+    context_buffer = combined_values[:seq_len].copy()
+    for warm_index in range(seq_len, prediction_start_index):
+        context_buffer[:-1] = context_buffer[1:]
+        context_buffer[-1] = combined_values[warm_index]
+
+    y_true_eval: list[float] = []
+    y_pred_eval: list[float] = []
+
+    model.eval()
+    for current_index in range(prediction_start_index, total_rows):
+        input_tensor = torch.from_numpy(context_buffer).unsqueeze(0).to(device)
+        with torch.no_grad():
+            model_output = model(input_tensor)
+
+        step_prediction_tensor = model_output[0, 0]
+        step_prediction = float(step_prediction_tensor.detach().cpu().item())
+        y_true_value = float(combined_targets[current_index])
+
+        if current_index >= history_rows:
+            y_true_eval.append(y_true_value)
+            y_pred_eval.append(step_prediction)
+
+        context_buffer[:-1] = context_buffer[1:]
+        next_row_features = combined_values[current_index].copy()
+        next_row_features[target_feature_index] = step_prediction
+        context_buffer[-1] = next_row_features
+
+    if not y_true_eval:
+        raise RuntimeError('Авторегрессионная оценка не вернула ни одного предсказания.')
+
+    if history_rows >= seq_len and len(y_true_eval) != len(data_frame):
+        raise RuntimeError(
+                'Авторегрессионная оценка не покрыла все строки целевого датафрейма.'
+        )
+
+    y_true = np.asarray(y_true_eval, dtype=np.float32)
+    y_pred = np.asarray(y_pred_eval, dtype=np.float32)
+    return y_true, y_pred
+
+
+def _evaluate_on_loader(
+        model: SimpleLSTMForecaster,
+        valid_loader: DataLoader,
+        device: torch.device,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Evaluate LSTM model on validation loader in teacher-forced mode.
+
+    This function flattens all predictions and targets into one-dimensional arrays.
+    """
+    model.eval()
+    all_preds: list[np.ndarray] = []
+    all_targets: list[np.ndarray] = []
+    with torch.no_grad():
+        for batch_x, batch_y in valid_loader:
+            batch_x_device = batch_x.to(device)
+            outputs = model(batch_x_device)
+            all_preds.append(outputs.cpu().numpy())
+            all_targets.append(batch_y.numpy())
+
+    if not all_preds or not all_targets:
+        raise RuntimeError('Validation loader did not produce any batches.')
+
+    y_pred_eval = np.concatenate(all_preds, axis=0).reshape(-1)
+    y_true_eval = np.concatenate(all_targets, axis=0).reshape(-1)
+    return y_true_eval, y_pred_eval
 
 
 def _train_one_model(
@@ -332,28 +510,39 @@ def _train_one_model(
         torch.cuda.reset_peak_memory_stats(device=device)
 
     train_start = time.perf_counter()
-    for _ in range(num_epochs):
+    for epoch_index in range(num_epochs):
         model.train()
+        epoch_loss_sum = 0.0
+        batch_count = 0
         for batch_x, batch_y in train_loader:
-            batch_x = batch_x.to(device)
-            batch_y = batch_y.to(device)
+            batch_x_device = batch_x.to(device)
+            batch_y_device = batch_y.to(device)
             optimizer.zero_grad()
-            preds = model(batch_x)
-            loss = criterion(preds, batch_y)
+            preds = model(batch_x_device)
+            loss = criterion(preds, batch_y_device)
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
+            epoch_loss_sum += float(loss.item())
+            batch_count += 1
+
+        if batch_count > 0:
+            avg_loss = epoch_loss_sum / float(batch_count)
+            logger.info(
+                    f'LSTM training epoch finished: epoch={epoch_index + 1}/{num_epochs}, '
+                    f'avg_loss={avg_loss:.6f}.'
+            )
+
     train_end = time.perf_counter()
 
     eval_start = time.perf_counter()
-    model.eval()
-    all_preds: list[np.ndarray] = []
-    all_targets: list[np.ndarray] = []
-    with torch.no_grad():
-        for batch_x, batch_y in valid_loader:
-            batch_x = batch_x.to(device)
-            preds = model(batch_x)
-            all_preds.append(preds.cpu().numpy())
-            all_targets.append(batch_y.numpy())
+
+    y_true_eval, y_pred_eval = _evaluate_on_loader(
+            model=model,
+            valid_loader=valid_loader,
+            device=device,
+    )
+
     eval_end = time.perf_counter()
 
     energy_joules = 0.0
@@ -367,17 +556,12 @@ def _train_one_model(
             )
             energy_joules = 0.0
 
-    y_pred = np.concatenate(all_preds, axis=0).reshape(-1)
-    y_true = np.concatenate(all_targets, axis=0).reshape(-1)
-    mse = float(np.mean((y_true - y_pred) ** 2))
+    mse = float(np.mean((y_true_eval - y_pred_eval) ** 2))
 
     peak_gpu_memory_mb = 0.0
     if device.type == 'cuda' and torch.cuda.is_available():
-        try:
-            peak_bytes = torch.cuda.max_memory_allocated(device=device)
-            peak_gpu_memory_mb = float(peak_bytes) / (1024.0 * 1024.0)
-        except RuntimeError:
-            peak_gpu_memory_mb = 0.0
+        peak_bytes = torch.cuda.max_memory_allocated(device=device)
+        peak_gpu_memory_mb = float(peak_bytes) / (1024.0 * 1024.0)
 
     usage = resource.getrusage(resource.RUSAGE_SELF)
     max_rss_mb = float(usage.ru_maxrss) / 1024.0
@@ -396,8 +580,8 @@ def _train_one_model(
         'total_energy_joules': energy_joules,
         'peak_gpu_memory_mb': peak_gpu_memory_mb,
         'max_rss_mb': max_rss_mb,
-        'validation_predictions': y_pred,
-        'validation_targets': y_true,
+        'validation_predictions': y_pred_eval,
+        'validation_targets': y_true_eval,
     }
 
     return mse
